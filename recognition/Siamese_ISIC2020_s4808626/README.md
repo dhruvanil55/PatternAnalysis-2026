@@ -6,9 +6,15 @@
 
 **User need**
 
-Melanoma is a very dangerous form of skin cancer. It is considered more serious than other skin cancers because it can spread to other parts of the body, especially if it is not found early [1]. Catching it early makes a large difference: in US cancer statistics, five-year relative survival is 100% when melanoma is still localised, but falls to 34% once it has spread to distant parts of the body [2]. Screening clinics photograph many lesions per patient with a dermatoscope, and in the ISIC 2020 dataset patients have a median of 12 imaged lesions each [3]. Specialists cannot review every image promptly, so an automated assistant that clears clearly benign lesions and prioritises suspicious ones could cut their workload and speed up diagnosis.
+The intended user is a skin-cancer screening clinic, where staff photograph each patient's lesions with a dermatoscope and a specialist reviews the images. Patients bring many lesions (a median of 12 per patient in ISIC 2020 [3]), so specialists cannot review every image promptly. Review delays matter: melanoma can spread to other parts of the body if it is not found early [1], and five-year relative survival falls from 100% when it is localised to 34% once it has spread to distant organs [2].
 
-The challenge is that melanoma is rare (584 of 33,126 images, about 1.8%) and the dataset was deliberately built with benign lesions that mimic melanoma [3]. Modern deep neural networks are known to be poorly calibrated, often reporting high confidence on predictions that turn out to be wrong [4]. In screening, a missed melanoma can be fatal [2], while a false alarm costs only an extra specialist review. The clinic therefore needs more than a correct label. It needs a confidence score it can trust, so that uncertain cases are passed to a specialist, an approach known as selective prediction or a reject option [5].
+The clinic needs a triage assistant that:
+
+1. **Separates melanoma from benign lesions reliably**, so suspicious lesions reach a specialist sooner and clearly benign ones do not use up review time (tested by AC1).
+2. **Rarely misses a melanoma.** A missed melanoma can be fatal, while a false alarm costs only one extra specialist review [2], so the tool must favour catching melanoma over avoiding false alarms (AC4).
+3. **Knows when it is unsure.** Only 1.8% of images are melanoma and many benign lesions look like melanoma [3], so some cases will be genuinely hard. Deep networks are often confidently wrong [4], so the clinic needs a confidence score it can trust. Uncertain cases must go to a specialist instead of being decided automatically, an approach known as selective prediction or a reject option [5] (AC4).
+4. **Holds up on new patients.** The tool will only ever see patients it was not trained on, so its reported performance must come from patients it has never seen (AC2).
+5. **Fits into the existing workflow**, running on modest hardware and returning a result quickly enough not to slow down review (AC5).
 
 **Scope**
 
