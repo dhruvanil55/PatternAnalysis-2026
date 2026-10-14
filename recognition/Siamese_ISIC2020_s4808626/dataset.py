@@ -1,8 +1,6 @@
 """
 Data loading and patient-level splitting for the ISIC 2020 melanoma dataset.
 
-Run directly to create the train, validation and test splits:
-    python dataset.py --data-dir ~/data/isic2020
 """
 import argparse
 import random
