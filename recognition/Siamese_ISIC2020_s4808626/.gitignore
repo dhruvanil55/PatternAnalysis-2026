@@ -1,1 +1,6 @@
+# Generated data and models (never commit)
 splits/
+data/
+.venv/
+__pycache__/
+.DS_Store

@@ -178,12 +178,84 @@ def save_preview(data_dir, splits_dir, out_path, n_per_class=8, seed=0):
     fig.savefig(out_path, dpi=120)
     print(f"Saved preview to {Path(out_path).resolve()}")
 
+class PairDataset(Dataset):
+    """
+    Random image pairs for training the Siamese network.
+
+    Each pair is chosen with two coin flips:
+    1. The first image is melanoma or benign with equal chance.
+    2. The second image is the same class or the other class with equal chance.
+    All four pair types are equally common, so melanoma appears in 75% of
+    pairs even though it is under 2% of images.
+
+    Returns (image_a, image_b, same_class, label_a, label_b), where same_class
+    is 1.0 if both images have the same label and 0.0 otherwise.
+    """
+
+    def __init__(self, split_csv, image_dir, transform, pairs_per_epoch=None):
+        self.images = LesionDataset(split_csv, image_dir, transform)
+        df = self.images.df
+        self.by_class = {
+            1: df.index[df["target"] == 1].tolist(),
+            0: df.index[df["target"] == 0].tolist(),
+        }
+        # Half as many pairs as images, so one epoch processes the same
+        # number of images as one baseline epoch.
+        self.pairs_per_epoch = pairs_per_epoch or len(df) // 2
+
+    def __len__(self):
+        return self.pairs_per_epoch
+
+    def sample_pair_indices(self):
+        """Pick two row indices and whether they share a class."""
+        class_a = random.choice([0, 1])
+        same = random.random() < 0.5
+        class_b = class_a if same else 1 - class_a
+
+        idx_a = random.choice(self.by_class[class_a])
+        idx_b = random.choice(self.by_class[class_b])
+        # Never pair an image with itself.
+        while idx_b == idx_a:
+            idx_b = random.choice(self.by_class[class_b])
+        return idx_a, idx_b, same
+
+    def __getitem__(self, idx):
+        # idx is ignored: a fresh random pair is drawn every time, so each
+        # epoch sees new combinations of the same images.
+        idx_a, idx_b, same = self.sample_pair_indices()
+        image_a, label_a, _ = self.images[idx_a]
+        image_b, label_b, _ = self.images[idx_b]
+        same_class = torch.tensor(1.0 if same else 0.0)
+        return image_a, image_b, same_class, label_a, label_b
+
+
+def check_pairs(data_dir, splits_dir, n=10000, seed=0):
+    """Count pair types over many samples to confirm the 50/50 coin flips work."""
+    random.seed(seed)
+    pairs = PairDataset(Path(splits_dir) / "train.csv", Path(data_dir) / "train", transform=None)
+    labels = pairs.images.df["target"]
+
+    counts = {"melanoma-melanoma": 0, "melanoma-benign": 0, "benign-benign": 0, "benign-melanoma": 0}
+    melanoma_seen = 0
+    for _ in range(n):
+        idx_a, idx_b, _ = pairs.sample_pair_indices()
+        a = "melanoma" if labels[idx_a] == 1 else "benign"
+        b = "melanoma" if labels[idx_b] == 1 else "benign"
+        counts[f"{a}-{b}"] += 1
+        melanoma_seen += (a == "melanoma") + (b == "melanoma")
+
+    print(f"Pairs per epoch: {len(pairs)}")
+    for name, count in counts.items():
+        print(f"{name:>18}: {100 * count / n:.1f}%")
+    print(f"Share of images in pairs that are melanoma: {100 * melanoma_seen / (2 * n):.1f}%")
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Create patient-level ISIC 2020 splits")
     parser.add_argument("--data-dir", required=True, help="Folder containing train.csv and train/")
     parser.add_argument("--out-dir", default="splits", help="Where to save the split CSVs")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--preview", action="store_true", help="Also save a grid of sample images")
+    parser.add_argument("--check-pairs", action="store_true", help="Check the pair type balance")
     args = parser.parse_args()
 
     data = load_metadata(args.data_dir)
@@ -194,3 +266,6 @@ if __name__ == "__main__":
 
     if args.preview:
         save_preview(args.data_dir, args.out_dir, "figures/sample_training_images.png")
+
+    if args.check_pairs:
+        check_pairs(args.data_dir, args.out_dir)
