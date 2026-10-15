@@ -73,8 +73,6 @@ class SiameseNetwork(nn.Module):
 
 class ContrastiveLoss(nn.Module):
     """
-    Contrastive loss (Hadsell et al., 2006).
-
     For each pair with embedding distance d:
     - same class (same_class = 1): loss = d^2, pulling the pair together
     - different class (same_class = 0): loss = max(0, margin - d)^2, pushing
@@ -119,7 +117,7 @@ if __name__ == "__main__":
     opposite = torch.tensor([[-1.0, 0.0]])  # distance 2 from point
     same, different = torch.tensor([1.0]), torch.tensor([0.0])
     print("Contrastive loss checks:")
-    print(f"  same class, same place (expect 0): {loss_fn(point, point, same):.4f}")
-    print(f"  same class, far apart (expect 4):  {loss_fn(point, opposite, same):.4f}")
-    print(f"  diff class, same place (expect 1): {loss_fn(point, point, different):.4f}")
-    print(f"  diff class, far apart (expect 0):  {loss_fn(point, opposite, different):.4f}")
+    print(f"same class, same place (expect 0): {loss_fn(point, point, same):.4f}")
+    print(f"same class, far apart (expect 4):  {loss_fn(point, opposite, same):.4f}")
+    print(f"diff class, same place (expect 1): {loss_fn(point, point, different):.4f}")
+    print(f"diff class, far apart (expect 0):  {loss_fn(point, opposite, different):.4f}")
