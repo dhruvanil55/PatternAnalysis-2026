@@ -116,9 +116,11 @@ Run with pandas on the downloaded dataset:
 | Patients with a melanoma | 428 | Enough to spread across all three splits |
 | Flagged duplicates | 434 (paper reports 425 [3]) | Remove before splitting |
 
-#### 3.2 Resource Estimate
+#### 3.2 Training Time and Resource Estimate
 
-ResNet-18 has about 11 million parameters. At batch size 64, the baseline should need roughly 3 to 5 GB of GPU memory and the Siamese network about 5 to 7 GB, since it processes two images per pair. Both fit the 8 GB limit. These are estimates to be confirmed by a short test run.
+Measured: a 3-epoch baseline run on the full training split (23,232 images, batch size 64) took about 2 minutes per epoch (116 to 124 seconds) on the MacBook (M5 Pro, Apple GPU). The average training loss fell each epoch, from 1.07 to 0.94 to 0.88, confirming the data pipeline and training loop work end to end.
+
+Estimated: ResNet-18 has about 11 million parameters. At batch size 64, the baseline should need roughly 3 to 5 GB of GPU memory and the Siamese network about 5 to 7 GB, since it processes two images per pair. Both fit the 8 GB limit. Memory is still to be measured.
 
 ### 4. Risks, Budget and Fallback
 
@@ -129,15 +131,15 @@ ResNet-18 has about 11 million parameters. At batch size 64, the baseline should
 | Only about 400 melanomas for training | Balanced pairs, augmentation and pretrained weights |
 | Confident wrong predictions | Tune confidence on validation data and check reliability diagrams |
 | Small test set (about 90 melanomas) gives noisy results | Report confidence intervals by resampling the test set |
-| Rangpur queue delays | Develop on a laptop with a small data subset, then submit full runs as batch jobs |
+| Training time on a laptop | Quick tests on a small random subset (`--limit`) before full runs, and keep the best epoch so runs are not repeated |
 
 #### 4.2 Budget
 
-About 1 GPU hour per training run and around 15 runs in total, so under 20 GPU hours on Rangpur. This is an estimate to be checked after the first run.
+About 20 minutes per 10-epoch run at the measured 2 minutes per epoch. Around 15 runs across both models comes to roughly 5 hours of training on the MacBook.
 
 #### 4.3 Next Experiment
 
-A one-epoch test run of the baseline on Rangpur to confirm data loading, GPU memory and time per epoch.
+Add validation metrics (balanced accuracy, AUROC, PR-AUC and melanoma recall) to the training loop, then run 10 epochs of the baseline and keep the epoch with the best validation AUROC.
 
 #### 4.4 Fallback
 
