@@ -14,7 +14,7 @@ from torch.utils.data import DataLoader, Subset
 
 from dataset import LesionDataset, get_transforms
 from modules import BaselineClassifier
-from utils import get_device, loader_settings, set_seed
+from utils import get_device, loader_settings, plot_history, set_seed
 
 
 def parse_args():
@@ -65,7 +65,7 @@ def train_one_epoch(model, loader, loss_fn, optimizer, device):
         total_loss += loss.item() * len(labels)
         total_images += len(labels)
         if step % 50 == 0:
-            print(f"  step {step:>4}/{len(loader)}  loss {loss.item():.4f}")
+            print(f"  step {step:>4}/{len(loader)}  loss {loss.item():.4f}", flush=True)
 
     return total_loss / total_images
 
@@ -128,6 +128,7 @@ def main():
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr)
 
     best_auroc = -1.0
+    history = []  # one row of results per epoch
     for epoch in range(1, args.epochs + 1):
         start = time.time()
         train_loss = train_one_epoch(model, train_loader, loss_fn, optimizer, device)
@@ -136,13 +137,25 @@ def main():
         print(f"Epoch {epoch}/{args.epochs}  train loss {train_loss:.4f}  "
               f"val loss {val['loss']:.4f}  bal acc {val['balanced_acc']:.3f}  "
               f"AUROC {val['auroc']:.3f}  PR-AUC {val['pr_auc']:.3f}  "
-              f"mel recall {val['melanoma_recall']:.3f}  time {time.time() - start:.0f}s")
+              f"mel recall {val['melanoma_recall']:.3f}  time {time.time() - start:.0f}s",
+              flush=True)
+
+        # Save the results so far and redraw the training curves.
+        history.append({
+            "epoch": epoch, "train_loss": train_loss, "val_loss": val["loss"],
+            "val_balanced_acc": val["balanced_acc"], "val_auroc": val["auroc"],
+            "val_pr_auc": val["pr_auc"], "val_melanoma_recall": val["melanoma_recall"],
+            "seconds": round(time.time() - start),
+        })
+        history_csv = out_dir / "baseline_history.csv"
+        pd.DataFrame(history).to_csv(history_csv, index=False)
+        plot_history(history_csv, Path("figures") / "baseline_curves.png", "Baseline CNN")
 
         # Keep the weights from the epoch with the best validation AUROC.
         if val["auroc"] > best_auroc:
             best_auroc = val["auroc"]
             torch.save(model.state_dict(), out_dir / "baseline_best.pt")
-            print(f"  Saved new best model (val AUROC {best_auroc:.3f})")
+            print(f"  Saved new best model (val AUROC {best_auroc:.3f})", flush=True)
 
 
 if __name__ == "__main__":
