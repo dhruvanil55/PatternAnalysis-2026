@@ -71,6 +71,7 @@ class SiameseNetwork(nn.Module):
         """Embed single images, used when comparing to reference images."""
         return self.encoder(images)
 
+
 class ContrastiveLoss(nn.Module):
     """
     For each pair with embedding distance d:
@@ -88,6 +89,37 @@ class ContrastiveLoss(nn.Module):
         pull = same_class * distance.pow(2)
         push = (1 - same_class) * F.relu(self.margin - distance).pow(2)
         return (pull + push).mean()
+
+
+def class_distances(query_emb, ref_emb, ref_labels, k=10):
+    """
+    Average distance from each query embedding to its k nearest melanoma
+    and k nearest benign reference embeddings.
+
+    Each class is searched separately so the far larger benign group cannot
+    outvote melanoma. Returns (melanoma_distance, benign_distance), each with
+    one value per query.
+    """
+    distances = torch.cdist(query_emb, ref_emb)  # (num_queries, num_refs)
+    per_class = []
+    for label in (1, 0):
+        class_dist = distances[:, ref_labels == label]
+        k_class = min(k, class_dist.shape[1])  # small test subsets may have fewer than k
+        nearest = class_dist.topk(k_class, dim=1, largest=False).values
+        per_class.append(nearest.mean(dim=1))
+    return per_class[0], per_class[1]
+
+
+def melanoma_probability(mel_dist, ben_dist, scale=1.0):
+    """
+    Turn the two class distances into a melanoma probability.
+
+    An image closer to melanoma references than benign ones gets a probability
+    above 0.5, and one equally close to both gets 0.5, meaning unsure. `scale`
+    controls how fast confidence grows with the gap and is tuned on the
+    validation split so confidence matches real accuracy.
+    """
+    return torch.sigmoid(scale * (ben_dist - mel_dist))
 
 
 def count_parameters(model):
@@ -121,3 +153,12 @@ if __name__ == "__main__":
     print(f"same class, far apart (expect 4):  {loss_fn(point, opposite, same):.4f}")
     print(f"diff class, same place (expect 1): {loss_fn(point, point, different):.4f}")
     print(f"diff class, far apart (expect 0):  {loss_fn(point, opposite, different):.4f}")
+
+    # Reference comparison checks on hand-made 2D embeddings.
+    refs = torch.tensor([[1.0, 0.0], [0.9, 0.1], [-1.0, 0.0], [-0.9, -0.1]])
+    ref_labels = torch.tensor([1, 1, 0, 0])  # two melanoma, two benign
+    queries = torch.tensor([[1.0, 0.05], [-1.0, 0.05], [0.0, 1.0]])
+    mel_d, ben_d = class_distances(queries, refs, ref_labels, k=2)
+    probs = melanoma_probability(mel_d, ben_d, scale=5.0)
+    print("Reference comparison (expect near 1, near 0, about 0.5):")
+    print(f"  {[round(p, 3) for p in probs.tolist()]}")
