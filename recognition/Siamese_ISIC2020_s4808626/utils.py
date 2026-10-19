@@ -39,7 +39,7 @@ def loader_settings(num_workers=4):
     return {"num_workers": num_workers, "persistent_workers": num_workers > 0}
 
 
-def plot_history(history_csv, out_path, title):
+def plot_history(history_csv, out_path, title, loss_label="Loss"):
     """
     Plot training curves from a history CSV written by train.py.
 
@@ -58,7 +58,7 @@ def plot_history(history_csv, out_path, title):
     ax_loss.plot(epochs, history["val_loss"], marker="s", color=SERIES_COLOURS[1],
                  linewidth=2, markersize=6, label="Validation loss")
     ax_loss.set_title("Loss", color=INK, loc="left")
-    ax_loss.set_ylabel("Weighted BCE loss", color=MUTED)
+    ax_loss.set_ylabel(loss_label, color=MUTED)
 
     metrics = [("val_auroc", "AUROC", "o"), ("val_pr_auc", "PR-AUC", "s"),
                ("val_balanced_acc", "Balanced accuracy", "^"),
