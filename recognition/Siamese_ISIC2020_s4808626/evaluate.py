@@ -12,14 +12,17 @@ Quick check that it runs, on small subsets (the numbers are not meaningful):
 import argparse
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import torch
-from sklearn.metrics import roc_auc_score
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import roc_auc_score, roc_curve
 from torch.utils.data import DataLoader
 
 from dataset import LesionDataset, get_transforms
 from modules import BaselineClassifier, SiameseNetwork, class_distances
 from utils import get_device, loader_settings, set_seed
+MAX_MISSED_MELANOMA = 0.05  # AC4: automatically cleared cases may miss at most 5% of melanomas
 
 
 def parse_args():
@@ -35,7 +38,6 @@ def parse_args():
     parser.add_argument("--limit", type=int, default=None,
                         help="Use a random subset of each split, for quick tests")
     return parser.parse_args()
-
 
 def load_split(splits_dir, name, limit, out_dir):
     """
@@ -91,6 +93,65 @@ def siamese_scores(query_emb, ref_emb, ref_labels, k, chunk=512):
         gaps.append((ben_dist - mel_dist).cpu())
     return torch.cat(gaps).numpy()
 
+def sigmoid(x):
+    return 1.0 / (1.0 + np.exp(-x))
+
+
+def fit_calibration(scores, labels):
+    """
+    Platt scaling: fit probability = sigmoid(a * score + b) on validation.
+
+    The same method is used for both models, so their calibrated
+    probabilities are directly comparable.
+    """
+    fit = LogisticRegression(C=1e6, max_iter=1000)  # very weak regularisation
+    fit.fit(scores.reshape(-1, 1), labels)
+    return float(fit.coef_[0, 0]), float(fit.intercept_[0])
+
+
+def balanced_threshold(probs, labels):
+    """Threshold that maximises balanced accuracy (sensitivity + specificity)."""
+    fpr, tpr, thresholds = roc_curve(labels, probs)
+    return float(thresholds[np.argmax(tpr - fpr)])
+
+
+def clear_threshold(probs, labels, max_missed=MAX_MISSED_MELANOMA):
+    """
+    Highest threshold t such that automatically clearing every image with
+    probability below t misses at most `max_missed` of the melanomas (AC4).
+    """
+    melanoma_probs = np.sort(probs[labels == 1])
+    allowed = int(np.floor(max_missed * len(melanoma_probs)))  # melanomas we may clear
+    return float(melanoma_probs[allowed]) if allowed < len(melanoma_probs) else 1.0
+
+
+def route(probs, t_clear, t_urgent):
+    """
+    Three-tier decision for each image:
+    auto-clear (below t_clear), urgent review (at or above t_urgent),
+    otherwise routine specialist review.
+    """
+    decisions = np.full(len(probs), "specialist review", dtype=object)
+    decisions[probs < t_clear] = "auto-clear"
+    decisions[probs >= t_urgent] = "urgent review"
+    return decisions
+
+
+def routing_summary(probs, labels, t_clear, t_urgent):
+    """Share of images in each tier and how many melanomas were automatically cleared."""
+    decisions = route(probs, t_clear, t_urgent)
+    n_mel = int(labels.sum())
+    missed = int(((decisions == "auto-clear") & (labels == 1)).sum())
+    urgent = decisions == "urgent review"
+    return {
+        "auto_clear_share": float((decisions == "auto-clear").mean()),
+        "specialist_review_share": float((decisions == "specialist review").mean()),
+        "urgent_review_share": float(urgent.mean()),
+        "melanomas_auto_cleared": missed,
+        "melanoma_miss_rate": missed / n_mel if n_mel else float("nan"),
+        "melanoma_share_of_urgent": float(labels[urgent].mean()) if urgent.any() else float("nan"),
+    }
+
 
 def main():
     args = parse_args()
@@ -126,6 +187,24 @@ def main():
         print(f"{model:12}"
               f"{roc_auc_score(labels['val'], scores[model]['val']):>12.3f}"
               f"{roc_auc_score(labels['test'], scores[model]['test']):>12.3f}")
+
+
+    # Fit calibration and thresholds on validation only.
+    print("\nCalibration and thresholds (fitted on validation)")
+    for model in ("baseline", "siamese"):
+        a, b = fit_calibration(scores[model]["val"], labels["val"])
+        val_probs = sigmoid(a * scores[model]["val"] + b)
+        t_balanced = balanced_threshold(val_probs, labels["val"])
+        t_clear = clear_threshold(val_probs, labels["val"])
+        t_urgent = max(t_balanced, t_clear)
+        routing = routing_summary(val_probs, labels["val"], t_clear, t_urgent)
+        print(f"{model}: a = {a:.3f}, b = {b:.3f}  |  balanced threshold {t_balanced:.4f}, "
+              f"auto-clear threshold {t_clear:.4f}")
+        print(f"  validation: auto-clear {routing['auto_clear_share']:.1%}, "
+              f"specialist review {routing['specialist_review_share']:.1%}, "
+              f"urgent review {routing['urgent_review_share']:.1%}, "
+              f"melanomas auto-cleared {routing['melanomas_auto_cleared']} "
+              f"({routing['melanoma_miss_rate']:.1%}, limit {MAX_MISSED_MELANOMA:.0%})")
 
 
 if __name__ == "__main__":
