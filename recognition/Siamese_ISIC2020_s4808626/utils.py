@@ -81,7 +81,9 @@ def plot_history(history_csv, out_path, title, loss_label="Loss"):
         for side in ("top", "right"):
             ax.spines[side].set_visible(False)
         ax.tick_params(colors=MUTED)
-        ax.legend(frameon=False, fontsize=9, labelcolor=INK)
+        # Legend below each panel so it never covers the lines.
+        ax.legend(frameon=False, fontsize=9, labelcolor=INK, loc="upper center",
+                  bbox_to_anchor=(0.5, -0.17), ncol=3)
 
     fig.suptitle(f"{title}: best validation AUROC at epoch {best_epoch} (dotted line)",
                  color=INK, x=0.01, ha="left")
