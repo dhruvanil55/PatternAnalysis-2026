@@ -33,6 +33,7 @@ from modules import (BaselineClassifier, ContrastiveLoss, SiameseNetwork, class_
 from utils import GRID, INK, MUTED, SERIES_COLOURS, get_device, loader_settings, set_seed
 
 MAX_MISSED_MELANOMA = 0.05  # AC4: automatically cleared cases may miss at most 5% of melanomas
+URGENT_PROBABILITY = 0.10   # urgent review when the calibrated chance of melanoma is at least 1 in 10
 MODEL_NAMES = {"baseline": "Baseline CNN", "siamese": "Siamese network"}
 MODEL_COLOURS = {"baseline": SERIES_COLOURS[0], "siamese": SERIES_COLOURS[1]}
 
@@ -156,6 +157,9 @@ def route(probs, t_clear, t_urgent):
     Three-tier decision for each image:
     auto-clear (below t_clear), urgent review (at or above t_urgent),
     otherwise routine specialist review.
+
+    t_urgent is a calibrated probability (URGENT_PROBABILITY), so it means the
+    same thing for both models: at least a 1 in 10 chance of melanoma.
     """
     decisions = np.full(len(probs), "specialist review", dtype=object)
     decisions[probs < t_clear] = "auto-clear"
@@ -189,7 +193,7 @@ def routing_summary(probs, labels, t_clear, t_urgent):
     }
 
 
-def test_metrics(raw_probs, probs, scores, labels, t_balanced, t_clear, calibration):
+def test_metrics(raw_probs, probs, scores, labels, t_balanced, t_clear, t_urgent, calibration):
     """Every test metric for one model. probs are calibrated, raw_probs are not."""
     preds = (probs >= t_balanced).astype(int)
     correct = (preds == labels).astype(int)
@@ -212,7 +216,7 @@ def test_metrics(raw_probs, probs, scores, labels, t_balanced, t_clear, calibrat
         # How well confidence separates correct from wrong decisions (0.5 = not at all).
         "confidence_auroc_for_correctness": (float(roc_auc_score(correct, confidence))
                                              if 0 < correct.sum() < len(correct) else float("nan")),
-        "routing": routing_summary(probs, labels, t_clear, max(t_balanced, t_clear)),
+        "routing": routing_summary(probs, labels, t_clear, t_urgent),
     }
 
 
@@ -459,7 +463,8 @@ def main():
         val_probs = sigmoid(calibration[0] * scores[model]["val"] + calibration[1])
         thresholds[model] = {"balanced": balanced_threshold(val_probs, labels["val"]),
                              "clear": clear_threshold(val_probs, labels["val"])}
-        thresholds[model]["urgent"] = max(thresholds[model]["balanced"], thresholds[model]["clear"])
+        # Urgent starts at a 1 in 10 chance, and never below the auto-clear line.
+        thresholds[model]["urgent"] = max(URGENT_PROBABILITY, thresholds[model]["clear"])
 
         # Apply them once to the test split.
         test_scores = scores[model]["test"]
@@ -473,7 +478,7 @@ def main():
                                                   thresholds[model]["urgent"]),
             "test": test_metrics(raw_probs[model], probs[model], test_scores, labels["test"],
                                  thresholds[model]["balanced"], thresholds[model]["clear"],
-                                 calibration),
+                                 thresholds[model]["urgent"], calibration),
         }
 
     print(f"Bootstrapping {args.bootstrap} patient resamples...", flush=True)
@@ -494,6 +499,7 @@ def main():
                                        "ms_per_image": timing[model]}
     results["confidence_intervals_95"] = intervals
     results["settings"] = {"k": args.k, "max_missed_melanoma": MAX_MISSED_MELANOMA,
+                           "urgent_probability": URGENT_PROBABILITY,
                            "bootstrap_resamples": args.bootstrap, "limit": args.limit,
                            "device": str(device)}
 
@@ -536,7 +542,8 @@ def print_summary(results):
     for label, key in [("Auto-cleared share", "auto_clear_share"),
                        ("Melanoma miss rate (AC4 <= 0.05)", "melanoma_miss_rate"),
                        ("Specialist review share", "specialist_review_share"),
-                       ("Urgent review share", "urgent_review_share")]:
+                       ("Urgent review share", "urgent_review_share"),
+                       ("Melanoma share of urgent cases", "melanoma_share_of_urgent")]:
         print(f"{label:36}{results['baseline']['test']['routing'][key]:>12.3f}"
               f"{results['siamese']['test']['routing'][key]:>12.3f}")
     for label, key, fmt in [("Parameters", "parameters", "{:,}"),
