@@ -8,14 +8,10 @@ Run after both models are trained:
     python evaluate.py --data-dir ~/isic2020
 Quick check that it runs, on small subsets (the numbers are not meaningful):
     python evaluate.py --data-dir ~/isic2020 --limit 512
-
-Writes:
-    outputs/evaluation_results.json      every number reported in the README
-    outputs/test_predictions.csv         per-image probabilities and decisions
-    figures/test_roc_pr.png, figures/test_reliability.png, figures/test_automation.png
 """
 import argparse
 import json
+import time
 from pathlib import Path
 
 import matplotlib
@@ -24,6 +20,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import torch
+import torch.nn as nn
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import (average_precision_score, balanced_accuracy_score,
                              confusion_matrix, f1_score, precision_recall_curve,
@@ -31,7 +28,8 @@ from sklearn.metrics import (average_precision_score, balanced_accuracy_score,
 from torch.utils.data import DataLoader
 
 from dataset import LesionDataset, get_transforms
-from modules import BaselineClassifier, SiameseNetwork, class_distances
+from modules import (BaselineClassifier, ContrastiveLoss, SiameseNetwork, class_distances,
+                     count_parameters)
 from utils import GRID, INK, MUTED, SERIES_COLOURS, get_device, loader_settings, set_seed
 
 MAX_MISSED_MELANOMA = 0.05  # AC4: automatically cleared cases may miss at most 5% of melanomas
@@ -54,6 +52,11 @@ def parse_args():
     parser.add_argument("--limit", type=int, default=None,
                         help="Use a random subset of each split, for quick tests")
     return parser.parse_args()
+
+
+# ---------------------------------------------------------------------------
+# Loading data and models
+# ---------------------------------------------------------------------------
 
 def load_split(splits_dir, name, limit, out_dir):
     """
@@ -84,6 +87,11 @@ def load_models(out_dir, device):
     siamese = SiameseNetwork(pretrained=False)
     siamese.load_state_dict(torch.load(Path(out_dir) / "siamese_best.pt", map_location="cpu"))
     return baseline.to(device).eval(), siamese.to(device).eval()
+
+
+# ---------------------------------------------------------------------------
+# Raw scores: higher always means more likely melanoma
+# ---------------------------------------------------------------------------
 
 @torch.no_grad()
 def baseline_scores(model, loader, device):
@@ -244,6 +252,53 @@ def bootstrap_intervals(test_df, probs, thresholds, n_resamples, seed=0):
     return {name: [float(np.percentile(v, 2.5)), float(np.percentile(v, 97.5))]
             for name, v in samples.items()}
 
+def synchronise(device):
+    """Wait for the GPU to finish, so timings are accurate."""
+    if device.type == "mps":
+        torch.mps.synchronize()
+
+def peak_training_memory_gb(kind, device, batch_size, steps=5):
+    """
+    Peak GPU memory over a few training steps on random images.
+
+    Uses the same batch size as real training. Only measured on the Apple GPU,
+    where it is the memory the Metal driver holds for this process.
+    """
+    if device.type != "mps":
+        return None
+    torch.mps.empty_cache()
+    model = (BaselineClassifier(pretrained=False) if kind == "baseline"
+             else SiameseNetwork(pretrained=False)).to(device)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4)
+    peak = 0
+    for _ in range(steps):
+        images = torch.randn(batch_size, 3, 224, 224, device=device)
+        targets = torch.randint(0, 2, (batch_size,), device=device).float()
+        if kind == "baseline":
+            loss = nn.BCEWithLogitsLoss()(model(images), targets)
+        else:
+            other = torch.randn(batch_size, 3, 224, 224, device=device)
+            emb_a, emb_b = model(images, other)
+            loss = ContrastiveLoss()(emb_a, emb_b, targets)
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+        synchronise(device)
+        peak = max(peak, torch.mps.driver_allocated_memory())
+    del model, optimizer
+    torch.mps.empty_cache()
+    return peak / 1e9
+
+@torch.no_grad()
+def milliseconds_per_image(predict_one, images, warmup=10):
+    """Average time to predict one image, after a few warm-up runs."""
+    for image in images[:warmup]:
+        predict_one(image)
+    start = time.perf_counter()
+    for image in images[warmup:]:
+        predict_one(image)
+    return (time.perf_counter() - start) / len(images[warmup:]) * 1000
+
 def style_axes(ax, xlabel, ylabel, title):
     ax.set_title(title, color=INK, loc="left")
     ax.set_xlabel(xlabel, color=MUTED)
@@ -254,7 +309,6 @@ def style_axes(ax, xlabel, ylabel, title):
         ax.spines[side].set_visible(False)
     ax.tick_params(colors=MUTED)
     ax.legend(frameon=False, fontsize=9, labelcolor=INK)
-
 
 def plot_roc_pr(labels, probs, results, out_path):
     """ROC and precision-recall curves for both models on the test split."""
@@ -279,13 +333,11 @@ def plot_roc_pr(labels, probs, results, out_path):
     fig.savefig(out_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
 
-
 def reliability_points(probs, labels, n_bins=10):
     """Mean predicted probability and observed melanoma rate in equal-count bins."""
     order = np.argsort(probs)
     groups = np.array_split(order, n_bins)
     return ([probs[g].mean() for g in groups], [labels[g].mean() for g in groups])
-
 
 def plot_reliability(labels, raw_probs, probs, results, out_path):
     """
@@ -361,6 +413,7 @@ def to_builtin(value):
         return value.item()
     return value
 
+
 def main():
     args = parse_args()
     set_seed(args.seed)
@@ -371,6 +424,11 @@ def main():
     figure_dir.mkdir(parents=True, exist_ok=True)
     image_dir = Path(args.data_dir).expanduser() / "train"
     print(f"Using device: {device}", flush=True)
+
+    # Measure training memory first, before anything else is on the GPU.
+    print("Profiling training memory...", flush=True)
+    memory = {kind: peak_training_memory_gb(kind, device, args.batch_size)
+              for kind in ("baseline", "siamese")}
 
     splits = {name: load_split(args.splits_dir, name, args.limit, out_dir)
               for name in ("train", "val", "test")}
@@ -390,6 +448,9 @@ def main():
     ref_labels = torch.tensor(labels["train"], device=device)
     scores["siamese"] = {s: siamese_scores(embed_images(siamese, loaders[s], device),
                                            ref_emb, ref_labels, args.k) for s in ("val", "test")}
+    torch.save({"embeddings": ref_emb.cpu(), "labels": ref_labels.cpu(),
+                "image_names": splits["train"][0]["image_name"].tolist(), "k": args.k},
+               out_dir / f"{prefix}siamese_reference_bank.pt")
 
     results, probs, raw_probs, thresholds = {}, {}, {}, {}
     for model in ("baseline", "siamese"):
@@ -418,6 +479,19 @@ def main():
     print(f"Bootstrapping {args.bootstrap} patient resamples...", flush=True)
     intervals = bootstrap_intervals(splits["test"][0], probs, thresholds, args.bootstrap)
 
+    # Prediction time per image, including the Siamese comparison to every reference.
+    test_set = loaders["test"].dataset
+    timing_images = [test_set[i][0].unsqueeze(0).to(device) for i in range(min(60, len(test_set)))]
+    timing = {
+        "baseline": milliseconds_per_image(lambda x: baseline(x).item(), timing_images),
+        "siamese": milliseconds_per_image(
+            lambda x: siamese_scores(siamese.embed(x), ref_emb, ref_labels, args.k)[0],
+            timing_images),
+    }
+    for model, net in (("baseline", baseline), ("siamese", siamese)):
+        results[model]["resources"] = {"parameters": count_parameters(net),
+                                       "peak_training_memory_gb": memory[model],
+                                       "ms_per_image": timing[model]}
     results["confidence_intervals_95"] = intervals
     results["settings"] = {"k": args.k, "max_missed_melanoma": MAX_MISSED_MELANOMA,
                            "bootstrap_resamples": args.bootstrap, "limit": args.limit,
@@ -465,6 +539,12 @@ def print_summary(results):
                        ("Urgent review share", "urgent_review_share")]:
         print(f"{label:36}{results['baseline']['test']['routing'][key]:>12.3f}"
               f"{results['siamese']['test']['routing'][key]:>12.3f}")
+    for label, key, fmt in [("Parameters", "parameters", "{:,}"),
+                            ("Peak training memory (GB)", "peak_training_memory_gb", "{:.2f}"),
+                            ("Prediction time (ms per image)", "ms_per_image", "{:.1f}")]:
+        values = [results[m]["resources"][key] for m in ("baseline", "siamese")]
+        print(f"{label:36}" + "".join(f"{fmt.format(v) if v is not None else 'n/a':>12}"
+                                      for v in values))
     low, high = ci["auroc_difference"]
     print(f"\nSiamese minus baseline AUROC, 95% interval: {low:+.3f} to {high:+.3f}")
     print("(If the interval includes 0, the difference may be noise.)")

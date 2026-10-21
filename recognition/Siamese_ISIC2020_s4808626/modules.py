@@ -4,8 +4,6 @@ Model components for the ISIC 2020 melanoma project.
 - BaselineClassifier: ResNet-18 that outputs one melanoma score per image.
 - SiameseNetwork: shared ResNet-18 encoder that maps each image to a
   128-number embedding, trained on image pairs with contrastive loss.
-
-Uses PyTorch only (no NumPy), as the course specification requires.
 """
 import torch
 import torch.nn as nn
