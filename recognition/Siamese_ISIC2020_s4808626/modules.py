@@ -4,6 +4,12 @@ Model components for the ISIC 2020 melanoma project.
 - BaselineClassifier: ResNet-18 that outputs one melanoma score per image.
 - SiameseNetwork: shared ResNet-18 encoder that maps each image to a
   128-number embedding, trained on image pairs with contrastive loss.
+
+Standard methods used here (full references in README.md):
+- ResNet-18 [9], pretrained on ImageNet [11]
+- Siamese network with a shared encoder, Koch et al. [7]
+- Contrastive loss, Hadsell et al. [8]
+- Classifying by nearest reference images, as in Tschandl et al. [10]
 """
 import torch
 import torch.nn as nn
@@ -56,6 +62,7 @@ class SiameseNetwork(nn.Module):
     """
     Both images in a pair go through the same encoder, so the two branches
     share every weight. Similar lesions should end up with nearby embeddings.
+    Standard Siamese design from Koch et al. [7].
     """
 
     def __init__(self, embedding_dim=EMBEDDING_DIM, pretrained=True):
@@ -72,6 +79,7 @@ class SiameseNetwork(nn.Module):
 
 class ContrastiveLoss(nn.Module):
     """
+    Standard contrastive loss from Hadsell et al. [8].
     For each pair with embedding distance d:
     - same class (same_class = 1): loss = d^2, pulling the pair together
     - different class (same_class = 0): loss = max(0, margin - d)^2, pushing
@@ -92,7 +100,8 @@ class ContrastiveLoss(nn.Module):
 def class_distances(query_emb, ref_emb, ref_labels, k=10):
     """
     Average distance from each query embedding to its k nearest melanoma
-    and k nearest benign reference embeddings.
+    and k nearest benign reference embeddings. Nearest-reference
+    classification follows Tschandl et al. [10].
 
     Each class is searched separately so the far larger benign group cannot
     outvote melanoma. Returns (melanoma_distance, benign_distance), each with

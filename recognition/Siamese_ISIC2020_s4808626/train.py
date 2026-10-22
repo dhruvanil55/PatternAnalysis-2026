@@ -8,6 +8,10 @@ Quick tests save to outputs/<model>_quicktest_*, so they never overwrite a full 
 Full training (saves the best model to outputs/<model>_best.pt):
     python train.py --data-dir ~/isic2020 --model baseline --epochs 10
     python train.py --data-dir ~/isic2020 --model siamese --epochs 10
+
+Standard methods used here (full references in README.md):
+- Fine-tuning an ImageNet-pretrained ResNet-18 [9], [11]
+- Siamese training on image pairs with contrastive loss [7], [8]
 """
 import argparse
 import time
@@ -135,7 +139,7 @@ def evaluate(model, loader, loss_fn, device):
 # ---------------------------------------------------------------------------
 
 def train_siamese_epoch(model, loader, loss_fn, optimizer, device):
-    """Run one pass over freshly sampled training pairs and return the average loss."""
+    """Run one pass over freshly sampled training pairs and return the average contrastive loss [8]."""
     model.train()
     total_loss, total_pairs = 0.0, 0
 

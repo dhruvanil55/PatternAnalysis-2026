@@ -8,6 +8,12 @@ Run after both models are trained:
     python evaluate.py --data-dir ~/isic2020
 Quick check that it runs, on small subsets (the numbers are not meaningful):
     python evaluate.py --data-dir ~/isic2020 --limit 512
+
+Standard methods used here (full references in README.md):
+- Platt scaling, expected calibration error and reliability diagrams,
+  as used by Guo et al. [4]
+- Letting a model act only when confident and passing the rest on,
+  from Geifman and El-Yaniv [5]
 """
 import argparse
 import json
@@ -126,7 +132,7 @@ def sigmoid(x):
 
 def fit_calibration(scores, labels):
     """
-    Platt scaling: fit probability = sigmoid(a * score + b) on validation.
+    Platt scaling: fit probability = sigmoid(a * score + b) on validation [4].
 
     The same method is used for both models, so their calibrated
     probabilities are directly comparable.
@@ -154,7 +160,7 @@ def clear_threshold(probs, labels, max_missed=MAX_MISSED_MELANOMA):
 
 def route(probs, t_clear, t_urgent):
     """
-    Three-tier decision for each image:
+    Three-tier decision for each image, based on selective classification [5]:
     auto-clear (below t_clear), urgent review (at or above t_urgent),
     otherwise routine specialist review.
 
@@ -167,7 +173,7 @@ def route(probs, t_clear, t_urgent):
     return decisions
 
 def expected_calibration_error(probs, labels, n_bins=10):
-    """Average gap between predicted probability and observed melanoma rate, over 10 bins."""
+    """Average gap between predicted probability and observed melanoma rate, over 10 bins [4]."""
     bins = np.clip(np.digitize(probs, np.linspace(0, 1, n_bins + 1)[1:-1]), 0, n_bins - 1)
     ece = 0.0
     for b in range(n_bins):

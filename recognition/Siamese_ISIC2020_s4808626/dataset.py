@@ -1,6 +1,11 @@
 """
 Data loading and patient-level splitting for the ISIC 2020 melanoma dataset.
 
+Standard methods and sources used here (full references in README.md):
+- ISIC 2020 dataset [3], using the resized 256x256 JPEG version [6]
+- ImageNet colour normalisation for the pretrained backbone [11]
+- Training pairs for the Siamese network, as in Koch et al. [7] and
+  Hadsell et al. [8]
 """
 import argparse
 import random
@@ -178,7 +183,7 @@ def save_preview(data_dir, splits_dir, out_path, n_per_class=8, seed=0):
 
 class PairDataset(Dataset):
     """
-    Random image pairs for training the Siamese network.
+    Random image pairs for training the Siamese network (pair training as in [7], [8]).
 
     Each pair is chosen with two coin flips:
     1. The first image is melanoma or benign with equal chance.
