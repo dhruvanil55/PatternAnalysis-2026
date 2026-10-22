@@ -177,6 +177,80 @@ If the Siamese network stays below 0.80 balanced accuracy, first try triplet los
 
 **Effect on results.** Apple and NVIDIA GPUs do floating-point maths slightly differently, so rerunning on Rangpur with the same seed may give slightly different numbers. Both models were trained and tested on the same MacBook, so the comparison between them is unaffected.
 
+## Failure Analysis
+
+![Failure cases](figures/failure_cases.png)
+
+*Five test images chosen by `python predict.py --data-dir ~/isic2020 --failures`. Three are melanomas (rows 1, 2 and 5) and two are benign (rows 3 and 4).*
+
+### How the cases were chosen
+
+The `--failures` option searches the 4,947 test images for the most informative mistakes:
+
+- Row 1: the melanoma the Siamese network was most confident was benign
+- Row 2: the melanoma the baseline CNN was most confident was benign
+- Row 3: the benign lesion the Siamese network was most confident was melanoma
+- Row 4: the benign lesion the baseline CNN was most confident was melanoma
+- Row 5: the melanoma where the two models gave the most different answers
+
+### How to read the figure
+
+Each row is one test image. The first column is the test image itself, with its true diagnosis above it and both models' predictions below it. The next three columns are the three training melanomas that the Siamese network considers most similar to it. The last three columns are the three most similar benign training lesions.
+
+The number above each training image is its distance from the test image in the Siamese network's embedding. A smaller distance means the network sees the two images as more alike. Distances in this project usually fall between about 0.03 and 0.25.
+
+### How the percentages were calculated
+
+Each percentage is the model's estimated chance that the lesion is melanoma.
+
+- **Baseline CNN.** The ResNet-18 classifier gives each image a single score. That score is converted into a probability using Platt scaling, a small correction fitted on the validation split so that, for example, images given 10% really are melanoma about 10% of the time.
+- **Siamese network.** The network turns the test image into an embedding and finds its 10 nearest melanomas and 10 nearest benign lesions among the 23,232 training images. It works out the average distance to each group. If the image is closer on average to the melanomas, it is more likely to be melanoma. The difference between the two averages is then converted into a probability with Platt scaling, in the same way as the baseline. The figure only shows the closest three of each group, so it gives a good idea of the decision but not the full calculation.
+
+### How each case was routed
+
+Each probability is compared with thresholds chosen on the validation split:
+
+| Decision | Baseline CNN | Siamese network |
+|---|---|---|
+| Auto-clear | below 1.06% | below 0.49% |
+| Specialist review | 1.06% to under 10% | 0.49% to under 10% |
+| Urgent review | 10% or above | 10% or above |
+
+The auto-clear thresholds were set so that no more than 5% of validation melanomas would be cleared (AC4). They are very low because melanoma is rare, making up only about 1.8% of images in every split.
+
+| Row | Image | True diagnosis | Baseline | Siamese | Outcome |
+|---|---|---|---|---|---|
+| 1 | ISIC_5365617 | Melanoma | 0.6%, auto-clear | 0.2%, auto-clear | Missed by both models |
+| 2 | ISIC_3093026 | Melanoma | 0.1%, auto-clear | 0.2%, auto-clear | Missed by both models |
+| 3 | ISIC_5128348 | Benign | 4.1%, specialist review | 14.2%, urgent review | False alarm |
+| 4 | ISIC_6704518 | Benign | 55.1%, urgent review | 13.6%, urgent review | False alarm |
+| 5 | ISIC_7800750 | Melanoma | 58.3%, urgent review | 12.8%, urgent review | Caught by both models |
+
+### What each case shows
+
+**Row 1 (melanoma, missed).** This melanoma is faint, light brown and has a fine net-like pattern, which is typical of a harmless mole. Its three nearest benign images are very close (0.053 to 0.059). Its nearest melanoma is further away (0.089), and the next two are much further (0.215 and 0.242). Because it sits clearly among benign lesions, both models gave it well under 1% and auto-cleared it. In real use this patient would not have been seen by a doctor.
+
+**Row 2 (melanoma, missed).** This melanoma is orange-brown with a sharp edge, on pink skin with a scaly surround. Again the nearest benign images are much closer (about 0.05) than the nearest melanomas (0.066, 0.190 and 0.236). Its three nearest melanomas are the exact same three images as in row 1. This means very few training melanomas exist in this area of the embedding. When a melanoma does not look like the usual examples, there is nothing similar to match it to, so it is treated as benign.
+
+**Row 3 (benign, false alarm).** This harmless mole is large and very dark, which are features often seen in melanoma. Its nearest images in both groups are also dark, heavily pigmented lesions at similar distances (0.066 to 0.087). Because the evidence is mixed, the Siamese network gave 14.2% and sent it for urgent review. The baseline gave 4.1%, which still sent it for specialist review. A doctor would likely want to check this lesion too, so this is an acceptable mistake for a triage tool.
+
+**Row 4 (benign, false alarm).** The baseline gave this harmless lesion 55.1%, its highest score for any benign test image. The Siamese neighbours show a likely reason. All six nearest images, melanoma and benign, share the same round black dermoscope frame, ruler markings and pale, washed-out colouring. The network appears to be matching the camera setup rather than the lesion itself. This is known as shortcut learning, where a model picks up on features that are common in the training data but have nothing to do with the diagnosis.
+
+**Row 5 (melanoma, caught).** This melanoma fills most of the frame and has low contrast against the skin. The baseline gave 58.3% and the Siamese network gave 12.8%, the largest gap between the two models for any melanoma. All six distances are almost the same (0.067 to 0.079), so the Siamese network could not tell which group the image was closer to, and its probability stayed low. Even so, both results were above 10%, so both models sent it for urgent review. Ruler markings also appear in several of its neighbours.
+
+### Patterns across the cases
+
+1. **Unusual melanomas are the main risk.** With only 413 melanomas among the 23,232 training images, the models have not seen every way a melanoma can look. Rows 1 and 2 show what happens when a melanoma looks more like a typical mole. These are the cases behind the auto-clear tier missing 7.1% (baseline) and 5.9% (Siamese) of test melanomas, above the 5% target in AC4.
+2. **Image artefacts influence the results.** Dermoscope frames, ruler markings and colour differences between clinics affect which images the network sees as similar (rows 4 and 5). This means a training image shown as "similar" may be similar for the wrong reason.
+3. **Some lesions are hard to classify.** Large dark moles and low-contrast melanomas sit between the two groups (rows 3 and 5). Sending these to a doctor is the correct result for a triage tool.
+4. **Routing caught most errors.** Rows 3, 4 and 5 were all sent for review, so a doctor would have seen them. Only the auto-clear tier can cause harm, and rows 1 and 2 are examples of that harm.
+
+### Possible improvements
+
+- Add more melanoma examples, for example from earlier ISIC challenge datasets, so that less common types are represented.
+- Remove or cover ruler markings, ink and dermoscope frames before training, to reduce shortcut learning.
+- Choose the auto-clear threshold with a safety margin on validation, for example allowing 3% of melanomas to be cleared instead of 5%, so that the test result is more likely to stay under the 5% target.
+
 ## Related Implementations and Documentation
 | Source | What it shows | Related part of this project |
 |---|---|---|
