@@ -2,25 +2,31 @@
 Example predictions from the trained models. Run evaluate.py first, since it
 chooses the calibration and thresholds used here.
 
-For each image it prints both models' calibrated melanoma probability,
-routing decision and distance to the nearest melanoma and benign reference.
+For each image it prints both models' calibrated melanoma probability and
+routing decision, and saves a figure showing the image beside its nearest
+melanoma and nearest benign reference images from the training split.
 
     python predict.py --data-dir ~/isic2020                       # 4 random test images
     python predict.py --data-dir ~/isic2020 --images ISIC_0149568 ISIC_0188432
+    python predict.py --data-dir ~/isic2020 --failures            # cases for failure analysis
 """
 import argparse
 import json
 from pathlib import Path
 
+import matplotlib
+matplotlib.use("Agg")  # save figures to files without opening a window
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import torch
 from PIL import Image
+from torchvision import transforms
 
-from dataset import get_transforms
+from dataset import IMAGE_SIZE, get_transforms
 from evaluate import load_models, route, sigmoid
 from modules import class_distances
-from utils import get_device
+from utils import INK, MUTED, get_device
 
 N_SHOWN = 3  # nearest reference images shown per class
 
@@ -33,10 +39,13 @@ def parse_args():
     parser.add_argument("--images", nargs="+", help="Image names to predict, e.g. ISIC_0149568")
     parser.add_argument("--n", type=int, default=4,
                         help="Random test images to predict, half melanoma and half benign")
+    parser.add_argument("--failures", action="store_true",
+                        help="Pick informative mistakes from the test predictions")
     parser.add_argument("--quicktest", action="store_true",
                         help="Use the files from evaluate.py --limit")
     parser.add_argument("--seed", type=int, default=0)
     return parser.parse_args()
+
 
 def pick_random(test_predictions, n, seed):
     """Half melanoma and half benign test images, chosen at random."""
@@ -45,6 +54,30 @@ def pick_random(test_predictions, n, seed):
     chosen = pd.concat([melanoma.sample(n=min(n // 2, len(melanoma)), random_state=seed),
                         benign.sample(n=n - min(n // 2, len(melanoma)), random_state=seed)])
     return chosen["image_name"].tolist(), ["" for _ in range(len(chosen))]
+
+
+def pick_failures(test_predictions):
+    """
+    Up to five informative mistakes for failure analysis: confident misses,
+    confident false alarms and the biggest disagreement between the models.
+    """
+    melanoma = test_predictions[test_predictions["target"] == 1]
+    benign = test_predictions[test_predictions["target"] == 0]
+    disagreement = (melanoma["siamese_prob"] - melanoma["baseline_prob"]).abs()
+    candidates = [
+        ("Melanoma: Siamese most sure it was benign", melanoma.nsmallest(1, "siamese_prob")),
+        ("Melanoma: baseline most sure it was benign", melanoma.nsmallest(1, "baseline_prob")),
+        ("Benign: Siamese most sure it was melanoma", benign.nlargest(1, "siamese_prob")),
+        ("Benign: baseline most sure it was melanoma", benign.nlargest(1, "baseline_prob")),
+        ("Melanoma: models disagreed most", melanoma.loc[disagreement.nlargest(1).index]),
+    ]
+    names, reasons = [], []
+    for reason, rows in candidates:
+        name = rows["image_name"].iloc[0]
+        if name not in names:
+            names.append(name)
+            reasons.append(reason)
+    return names, reasons
 
 
 def true_labels(names, splits_dir):
@@ -95,6 +128,7 @@ def decisions(probs, model_results):
     t = model_results["thresholds"]
     return route(np.asarray(probs), t["clear"], t["urgent"])
 
+
 def print_predictions(names, labels, reasons, probs, decided, neighbours):
     print(f"\n{'Image':14}{'Truth':10}{'Baseline':>10}  {'decision':18}{'Siamese':>9}  "
           f"{'decision':18}{'nearest mel':>12}{'nearest ben':>12}")
@@ -105,6 +139,48 @@ def print_predictions(names, labels, reasons, probs, decided, neighbours):
               f"{neighbours[i]['melanoma'][0][1]:>12.3f}{neighbours[i]['benign'][0][1]:>12.3f}")
         if reasons[i]:
             print(f"{'':14}({reasons[i]})")
+
+
+def plot_predictions(names, labels, reasons, probs, decided, neighbours, image_dir, out_path):
+    """
+    One row per image: the image, then its nearest melanoma and nearest benign
+    training images with their embedding distances (smaller = more similar).
+    """
+    crop = transforms.CenterCrop(IMAGE_SIZE)
+    n_cols = 1 + 2 * N_SHOWN
+    fig, axes = plt.subplots(len(names), n_cols, figsize=(2.2 * n_cols, 2.9 * len(names)),
+                             squeeze=False)
+
+    def show(ax, name):
+        ax.imshow(crop(Image.open(image_dir / f"{name}.jpg").convert("RGB")))
+
+    for row, name in enumerate(names):
+        ax = axes[row, 0]
+        show(ax, name)
+        title = f"{reasons[row]}\n" if reasons[row] else ""
+        title += f"{name}: {'MELANOMA' if labels[row] else 'benign'}"
+        ax.set_title(title, color=INK, fontsize=8.5, loc="left")
+        ax.set_xlabel(f"Baseline {probs['baseline'][row]:.1%}, {decided['baseline'][row]}\n"
+                      f"Siamese {probs['siamese'][row]:.1%}, {decided['siamese'][row]}",
+                      color=INK, fontsize=8)
+        references = ([("melanoma", n) for n in neighbours[row]["melanoma"]] +
+                      [("benign", n) for n in neighbours[row]["benign"]])
+        for col, (kind, (ref_name, dist)) in enumerate(references, start=1):
+            ax = axes[row, col]
+            show(ax, ref_name)
+            ax.set_title(f"Nearest {kind}\ndistance {dist:.3f}", color=MUTED, fontsize=8)
+        for ax in axes[row]:
+            ax.set_xticks([])
+            ax.set_yticks([])
+            for spine in ax.spines.values():
+                spine.set_visible(False)
+
+    fig.suptitle("Each image beside its most similar training images (Siamese embedding)",
+                 color=INK, x=0.01, ha="left")
+    fig.tight_layout()
+    Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, dpi=120, bbox_inches="tight")
+    plt.close(fig)
 
 
 def main():
@@ -122,6 +198,8 @@ def main():
 
     if args.images:
         names, reasons = args.images, ["" for _ in args.images]
+    elif args.failures:
+        names, reasons = pick_failures(test_predictions)
     else:
         names, reasons = pick_random(test_predictions, args.n, args.seed)
     labels = true_labels(names, args.splits_dir)
@@ -132,6 +210,12 @@ def main():
     decided = {m: decisions(probs[m], results[m]) for m in probs}
 
     print_predictions(names, labels, reasons, probs, decided, neighbours)
+
+    figure_dir = out_dir if args.quicktest else Path("figures")
+    out_path = figure_dir / (f"{prefix}failure_cases.png" if args.failures
+                             else f"{prefix}example_predictions.png")
+    plot_predictions(names, labels, reasons, probs, decided, neighbours, image_dir, out_path)
+    print(f"\nSaved figure to {out_path}")
 
 
 if __name__ == "__main__":
