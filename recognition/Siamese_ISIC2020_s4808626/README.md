@@ -11,7 +11,7 @@ The intended user is a skin-cancer screening clinic, where staff photograph each
 The clinic needs a triage assistant that:
 
 1. **Separates melanoma from benign lesions reliably**, so suspicious lesions reach a specialist sooner and clearly benign ones do not use up review time (tested by AC1).
-2. **Rarely misses a melanoma.** A missed melanoma can be fatal, while a false alarm costs only one extra specialist review [2], so the tool must favour catching melanoma over avoiding false alarms (AC4).
+2. **Rarely misses a melanoma.** A missed melanoma can be fatal, while a false alarm costs only one extra specialist review, so the tool must favour catching melanoma over avoiding false alarms (AC4).
 3. **Knows when it is unsure.** Only 1.8% of images are melanoma and many benign lesions look like melanoma [3], so some cases will be genuinely hard. Deep networks are often confidently wrong [4], so the clinic needs a confidence score it can trust. Uncertain cases must go to a specialist instead of being decided automatically, an approach known as selective prediction or a reject option [5] (AC4).
 4. **Holds up on new patients.** The tool will only ever see patients it was not trained on, so its reported performance must come from patients it has never seen (AC2).
 5. **Fits into the existing workflow**, running on modest hardware and returning a result quickly enough not to slow down review (AC5).
@@ -38,8 +38,9 @@ Out of scope:
 
 #### AC1. Classification performance
 - **Target:** Balanced accuracy of at least 0.80 on the held-out test split.
-- **Why:** Only 1.8% of images are melanoma [3], so a model that always predicts benign scores 98% plain accuracy. Balanced accuracy averages the recall of both classes, so it cannot be gamed this way [10].
+- **Why:** Only 1.8% of images are melanoma [3], so a model that always predicts benign scores 98% plain accuracy. Balanced accuracy averages the recall of both classes, so it cannot be gamed this way.
 - **How it is tested:** The decision threshold is chosen on the validation split only, then applied once to the test split.
+
 #### AC2. Data hygiene and leakage prevention
 - **Target:** Zero patients shared between the train, validation and test splits, and zero flagged duplicate images remaining.
 - **Why:** If one patient appears in both training and testing, the model can recognise the person's skin rather than the lesion, inflating test scores. The dataset authors report 425 pixel-identical duplicate images [3], and the CSV used here flags 434 rows as duplicates.
@@ -85,7 +86,7 @@ Siamese network for melanoma versus benign classification on the ISIC 2020 Kaggl
 
 - **Pair generation strategy.** The anchor image is drawn as melanoma half the time and benign half the time, and its partner is the same class half the time. This gives equal numbers of the four pair types (melanoma-melanoma, melanoma-benign, benign-benign, benign-melanoma), so the rare class is seen far more often than its natural 1.8% share. New pairs are drawn every epoch, so the 584 melanomas form many different pairs and the model is less likely to memorise them.
 - **Making a prediction.** A new image is embedded and compared to a bank of labelled training images. For each class, the average distance to its 10 nearest reference images is computed. Taking the nearest neighbours of each class separately stops the large benign majority from outvoting melanoma. The two distances are turned into a melanoma probability, with a scaling factor tuned on the validation split so the confidence is well calibrated [4].
-- **Why this suits the problem.** Classifying by comparison to confirmed cases mirrors how image retrieval has been used to support dermoscopic diagnosis [12]. It also gives an interpretable signal: a lesion that sits close to both melanoma and benign references is visibly ambiguous, and the nearest reference images can be shown to a specialist as evidence.
+- **Why this suits the problem.** Classifying by comparison to confirmed cases mirrors how image retrieval has been used to support dermoscopic diagnosis [10]. It also gives an interpretable signal: a lesion that sits close to both melanoma and benign references is visibly ambiguous, and the nearest reference images can be shown to a specialist as evidence.
 
 *Why both use ResNet-18.* Using the same pretrained encoder in both models means any difference in results comes from the Siamese training and comparison method, not from a stronger backbone. ResNet-18 is also small enough to train quickly on a Rangpur GPU and to test on a laptop during development.
 
@@ -95,9 +96,9 @@ Siamese network for melanoma versus benign classification on the ISIC 2020 Kaggl
 |---|---|
 | Convolutional neural networks and residual connections | ResNet-18 encoder in both models [9] |
 | Transfer learning | Starting from ImageNet-pretrained weights [11] rather than random weights, since 584 melanomas are too few to train a deep network from scratch |
-| Metric learning | Siamese network with shared weights and contrastive loss [7], [8]. Triplet loss [13] was considered and is a possible later experiment |
+| Metric learning | Siamese network with shared weights and contrastive loss [7], [8]. Triplet loss [12] was considered and is a possible later experiment |
 | Data augmentation | Flips, rotations and colour changes to reduce overfitting on the small melanoma class |
-| Class imbalance | Weighted loss for the baseline, balanced pair sampling for the Siamese network, and evaluation with balanced accuracy and PR-AUC [10] |
+| Class imbalance | Weighted loss for the baseline, balanced pair sampling for the Siamese network, and evaluation with balanced accuracy and PR-AUC |
 | Evaluation and model selection | Threshold and calibration chosen on the validation split only, with the test split used once at the end |
 | Calibration and uncertainty | ECE, reliability diagrams and a reject option for routing cases to specialists [4], [5] |
 | High-performance computing | Training runs submitted as batch jobs on the Rangpur GPU cluster, with short interactive sessions for debugging |
@@ -120,7 +121,7 @@ Run with pandas on the downloaded dataset:
 
 Measured: a 3-epoch baseline run on the full training split (23,232 images, batch size 64) took about 2 minutes per epoch (116 to 124 seconds) on the MacBook (M5 Pro, Apple GPU). The average training loss fell each epoch, from 1.07 to 0.94 to 0.88, confirming the data pipeline and training loop work end to end.
 
-Estimated: ResNet-18 has about 11 million parameters. At batch size 64, the baseline should need roughly 3 to 5 GB of GPU memory and the Siamese network about 5 to 7 GB, since it processes two images per pair. Both fit the 8 GB limit. Memory is still to be measured.
+Estimated: ResNet-18 has about 11 million parameters. At batch size 64, the baseline should need roughly 3 to 5 GB of GPU memory and the Siamese network about 5 to 7 GB, since it processes two images per pair. Both fit the 16 GB limit. Memory had not been measured at this stage (see Resource profiling in the Results section for the measured values).
 
 ### 4. Risks, Budget and Fallback
 
@@ -173,9 +174,112 @@ If the Siamese network stays below 0.80 balanced accuracy, first try triplet los
 
 ## Changes from the Feasibility Review
 
-**Compute.** The feasibility review planned to train on UQ's Rangpur cluster, with a MacBook used for development and small tests. After testing, all training and evaluation were done on the MacBook (M5 Pro, 48 GB, Apple GPU) instead. A full baseline epoch over 23,232 training images took about 2 minutes, so a 10-epoch run finishes in roughly 20 minutes, and peak memory stayed under [to be measured] GB. That was fast enough to iterate without cluster queue times or copying the dataset to Rangpur. The memory target was also lowered from 16 GB to 8 GB, so the models would fit on an entry-level GPU.
+**Compute.** The feasibility review planned to train on UQ's Rangpur cluster, with a MacBook used for development and small tests. After testing, all training and evaluation were done on the MacBook (M5 Pro, 48 GB, Apple GPU) instead. A full baseline epoch over 23,232 training images took about 2 minutes, so a 10-epoch run finishes in roughly 20 minutes, and peak training memory was 2.46 GB for the baseline and 4.61 GB for the Siamese network. That was fast enough to iterate without cluster queue times or copying the dataset to Rangpur. The memory target was also lowered from 16 GB to 8 GB, so the models would fit on an entry-level GPU.
+
+**Calibration.** The feasibility review planned to turn the Siamese distances into a probability with a single scaling factor. The final version uses Platt scaling for both models instead. It fits two numbers (a scale and an offset) on the validation split, so the baseline and Siamese probabilities are calibrated in the same way and can be compared fairly [4].
+
+**Routing.** The feasibility review described a single threshold between automatic decisions and human review. The final version uses three groups: auto-clear, specialist review and urgent review. The urgent group (10% chance of melanoma or above) was added so that the most suspicious lesions are seen first, and so that both models have a working specialist review group.
 
 **Effect on results.** Apple and NVIDIA GPUs do floating-point maths slightly differently, so rerunning on Rangpur with the same seed may give slightly different numbers. Both models were trained and tested on the same MacBook, so the comparison between them is unaffected.
+
+## Results
+
+All numbers below come from `evaluate.py`. Both models were scored on the same held-out test split of 4,947 images from 308 patients, of which 85 are melanomas. Calibration and every threshold were chosen on the validation split only, and the test split was scored once.
+
+### Training
+
+![Baseline training curves](figures/baseline_curves.png)
+![Siamese training curves](figures/siamese_curves.png)
+
+Both models were trained for 10 epochs with AdamW (learning rate 0.0001, batch size 64). After each epoch the model was scored on the validation split, and the epoch with the highest validation AUROC was saved. The dotted line in each figure marks that epoch.
+
+- **Baseline CNN.** The best epoch was epoch 8, with a validation AUROC of 0.888. Validation scores moved up and down from epoch to epoch but did not show a clear decline.
+- **Siamese network.** The best epoch was epoch 4, with a validation AUROC of 0.901. After that, the training pair loss kept falling (0.110 to 0.037) while the validation pair loss rose (0.198 to 0.342). This means the network started memorising the training pairs instead of learning features that carry over to new patients. Saving the best epoch protects against this.
+
+The Siamese network's validation balanced accuracy during training stayed low (0.51 to 0.60). This is because training uses a fixed cut-off of 50%, and before calibration the Siamese network's scores lean towards benign. Melanomas are rare, so a new image usually has more benign images than melanoma images close to it. Platt scaling in `evaluate.py` corrects this, which is why the test results below are much better.
+
+### Test performance (AC1 and AC3)
+
+Metrics in the table use each model's balanced threshold, the cut-off that best balances melanoma and benign recall on the validation split (1.06% for the baseline and 1.38% for the Siamese network). Values in brackets are 95% confidence intervals from 1,000 bootstrap resamples of test patients.
+
+| Metric | Baseline CNN | Siamese network |
+|---|---|---|
+| AUROC | 0.899 [0.866, 0.925] | 0.909 [0.877, 0.936] |
+| PR-AUC | 0.223 | 0.189 |
+| Balanced accuracy | 0.786 [0.749, 0.818] | 0.824 [0.780, 0.863] |
+| Melanoma recall | 0.929 (79 of 85) | 0.859 (73 of 85) |
+| Melanoma precision | 0.044 | 0.067 |
+| Benign recall | 0.643 | 0.790 |
+| Benign precision | 0.998 | 0.997 |
+| Macro-F1 | 0.433 | 0.503 |
+| Benign lesions flagged as melanoma | 1,735 | 1,022 |
+| Melanomas missed | 6 | 12 |
+
+![ROC and precision-recall curves](figures/test_roc_pr.png)
+
+- **The two models rank lesions about equally well.** The Siamese network's AUROC is 0.010 higher, but the 95% interval for the difference is [-0.008, 0.028]. It includes zero, so the difference is not statistically significant.
+- **They make different trade-offs.** The baseline catches more melanomas (79 against 73) but raises 713 more false alarms. The Siamese network clears more benign lesions correctly, which gives it the higher balanced accuracy.
+- **The baseline has the higher PR-AUC.** Its highest scores are more often real melanomas, so it does better when only the most suspicious lesions are considered.
+- **Precision is low for both.** With only 85 melanomas among 4,947 test images, even a good model flags many benign lesions for every melanoma it finds. This is expected for a screening tool, where a false alarm costs one extra review.
+
+### Calibration and confidence (research question)
+
+![Reliability diagrams](figures/test_reliability.png)
+
+| Measure | Baseline CNN | Siamese network |
+|---|---|---|
+| ECE before calibration | 0.181 | 0.407 |
+| ECE after calibration | 0.003 | 0.005 |
+| AUROC of confidence for correctness | 0.772 | 0.632 |
+
+- **Calibration was essential for both models.** Expected calibration error (ECE) measures the gap between a model's stated probability and how often it is actually right. Before calibration, both models' probabilities were misleading, the Siamese network much more so. After Platt scaling, both are close to perfectly calibrated on the test split.
+- **The baseline's confidence is more useful.** "AUROC of confidence for correctness" measures how well a model's confidence separates its right answers from its wrong ones, where 0.5 is no better than chance. The baseline scores 0.772 and the Siamese network 0.632. This goes against the hypothesis in the research question: the Siamese network's distance-based confidence does not track its mistakes better than a standard classifier.
+
+### Routing to specialists (AC4)
+
+Each test image is sent to one of three groups using the calibrated probability: auto-clear (below the auto-clear threshold), urgent review (10% or above), or specialist review (everything in between). The auto-clear threshold was set on validation so that no more than 5% of melanomas would be cleared.
+
+| Measure | Baseline CNN | Siamese network |
+|---|---|---|
+| Auto-clear threshold | 1.06% | 0.49% |
+| Validation melanomas auto-cleared | 4 of 83 (4.8%) | 4 of 83 (4.8%) |
+| Test images auto-cleared | 63.3% [58.6, 67.5] | 69.5% [65.5, 73.0] |
+| Test images sent to specialist review | 33.4% | 23.4% |
+| Test images sent to urgent review | 3.3% | 7.1% |
+| Test melanomas auto-cleared | 6 of 85 (7.1%) [2.3, 12.9] | 5 of 85 (5.9%) [1.3, 11.5] |
+| Share of urgent cases that were melanoma | 17.8% | 15.0% |
+
+![Automation and missed melanoma trade-off](figures/test_automation.png)
+
+- **The 5% target was met on validation but not on test.** Both models auto-cleared 4.8% of validation melanomas, inside the target. On the test split they cleared 7.1% and 5.9%. With only 83 to 85 melanomas in each split, one or two extra misses move the rate by more than a percentage point, and both confidence intervals include 5%. The threshold needs a safety margin, which is covered in the recommendation.
+- **The Siamese network automates more of the workload.** It auto-cleared 69.5% of test images against 63.3% for the baseline, while missing one fewer melanoma. The confidence intervals overlap, so this advantage is not certain.
+- **The urgent group is much richer in melanoma than the whole test set.** About 1 in 6 urgent cases was melanoma, compared with 1 in 58 overall.
+
+### Resource profiling (AC5)
+
+| Measure | Baseline CNN | Siamese network |
+|---|---|---|
+| Parameters | 11,177,025 | 11,242,176 |
+| Peak GPU memory during training (batch of 64) | 2.46 GB | 4.61 GB |
+| Prediction time per image | 4.1 ms | 5.0 ms |
+| Training time per epoch | about 2.1 minutes | about 2.3 minutes |
+| Extra storage needed at prediction time | none | 11.9 MB of reference embeddings |
+
+All measurements were taken on a MacBook Pro (M5 Pro, 48 GB) using the Apple GPU. Peak memory is the memory the GPU driver held over five training steps. Prediction time is the average over 50 test images, one at a time, after 10 warm-up runs. For the Siamese network it includes comparing the new embedding with all 23,232 stored training embeddings.
+
+- Both models have almost the same number of parameters, since they share the ResNet-18 backbone. The Siamese network only swaps the final layer for a 128-number embedding layer.
+- The Siamese network uses about twice the training memory, because every training step processes two images per pair.
+- Both models are far inside the AC5 limits of 8 GB of memory and 100 ms per image.
+
+### Acceptance criteria summary
+
+| Criterion | Target | Baseline CNN | Siamese network |
+|---|---|---|---|
+| AC1. Classification | Balanced accuracy of at least 0.80 on test | Not met (0.786) | Met (0.824), although the lower end of its interval is 0.780 |
+| AC2. Data hygiene | No shared patients, no duplicates | Met | Met |
+| AC3. Baseline comparison | Both models on the same test split | Met | Met |
+| AC4. Safe routing | At most 5% of melanomas auto-cleared | Met on validation (4.8%), not on test (7.1%) | Met on validation (4.8%), not on test (5.9%) |
+| AC5. Resources | Under 8 GB memory and 100 ms per image | Met (2.46 GB, 4.1 ms) | Met (4.61 GB, 5.0 ms) |
 
 ## Failure Analysis
 
@@ -252,6 +356,7 @@ The auto-clear thresholds were set so that no more than 5% of validation melanom
 - Choose the auto-clear threshold with a safety margin on validation, for example allowing 3% of melanomas to be cleared instead of 5%, so that the test result is more likely to stay under the 5% target.
 
 ## Related Implementations and Documentation
+
 | Source | What it shows | Related part of this project |
 |---|---|---|
 | [PyTorch examples: Siamese network](https://github.com/pytorch/examples/tree/main/siamese_network) | The official PyTorch example of a Siamese network, with one shared encoder applied to both images of a pair | `SiameseNetwork` in `modules.py` and the pair training loop in `train.py` |
