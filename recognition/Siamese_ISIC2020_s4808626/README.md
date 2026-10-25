@@ -182,6 +182,165 @@ If the Siamese network stays below 0.80 balanced accuracy, first try triplet los
 
 **Effect on results.** Apple and NVIDIA GPUs do floating-point maths slightly differently, so rerunning on Rangpur with the same seed may give slightly different numbers. Both models were trained and tested on the same MacBook, so the comparison between them is unaffected.
 
+## Overview
+
+**The problem.** Melanoma is the most dangerous common skin cancer, and it is far more treatable when it is found early [1], [2]. Skin-cancer clinics photograph many lesions per patient with a dermatoscope, and a specialist has to review every image. Most of these lesions are harmless, so much of the specialist's time goes on images that did not need review. This project builds a triage tool for that workflow. For each dermoscopic image it estimates the chance of melanoma and sends the image to one of three groups: auto-clear, specialist review or urgent review. It uses the ISIC 2020 dataset [3], where only about 1.8% of images are melanoma.
+
+**How it works.** The main model is a Siamese network [7]. A ResNet-18 encoder [9], pretrained on ImageNet [11], turns each image into 128 numbers called an embedding. The network is trained on pairs of images with contrastive loss [8], which pulls images of the same class together and pushes images of different classes apart. To predict a new image, the network finds the 10 most similar melanomas and the 10 most similar benign lesions among the training images, and compares the average distance to each group. A lesion that sits closer to the melanomas is more likely to be melanoma. This distance gap is turned into a probability using Platt scaling fitted on the validation split [4], and the probability decides which group the image goes to. A standard ResNet-18 classifier with the same pretrained encoder is trained as the baseline, and both models are compared on the same unseen patients.
+
+![Example predictions](figures/example_predictions.png)
+
+*Four random test images from `predict.py`. Each row shows the test image, both models' predictions and routing decisions, and the three most similar training melanomas and benign lesions found by the Siamese network. A smaller distance means a closer match.*
+
+**Main findings.** Both models rank lesions about equally well on the test split (AUROC 0.909 for the Siamese network and 0.899 for the baseline, a difference that is not statistically significant). The Siamese network auto-clears more images (69.5% against 63.3%), but the baseline's confidence is better at telling its right answers from its wrong ones. Both models met the 5% missed-melanoma target on validation but not on test. The full results are in the [Results](#results) section.
+
+## Setup and Usage
+
+### Requirements
+
+- Python 3.14
+- The packages in `requirements.txt`, with exact versions:
+
+| Package | Version |
+|---|---|
+| torch | 2.14.1 |
+| torchvision | 0.29.1 |
+| numpy | 2.5.4 |
+| pandas | 3.0.6 |
+| scikit-learn | 1.9.1 |
+| matplotlib | 3.11.2 |
+| pillow | 12.3.0 |
+
+The code runs on an Apple GPU (MPS) when one is available and falls back to the CPU otherwise. All results in this README were produced on a MacBook Pro (M5 Pro, 48 GB). Training on the CPU works but is much slower.
+
+### Installation
+
+```bash
+git clone https://github.com/dhruvanil55/PatternAnalysis-2026.git
+cd PatternAnalysis-2026/recognition/Siamese_ISIC2020_s4808626
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+```
+
+### Dataset
+
+Download the resized ISIC 2020 images, "JPEG Melanoma 256x256" by Chris Deotte, from Kaggle [6]. Unzip it so the folder looks like this:
+
+```
+~/isic2020/
+    train.csv
+    train/
+        ISIC_0015719.jpg
+        ...
+```
+
+Only `train.csv` and the `train/` folder are used. The dataset and trained models are not committed to this repository.
+
+### Running the pipeline
+
+Run these commands in order from this folder. Each step saves the files the next step needs.
+
+| Step | Command | What it does | Time on the MacBook |
+|---|---|---|---|
+| 1 | `python dataset.py --data-dir ~/isic2020 --preview` | Removes duplicates, splits patients into train, validation and test, checks for leakage, and saves the splits to `splits/` | under a minute |
+| 2 | `python train.py --data-dir ~/isic2020 --model baseline` | Trains the baseline CNN for 10 epochs and saves the best epoch to `outputs/baseline_best.pt` | about 21 minutes |
+| 3 | `python train.py --data-dir ~/isic2020 --model siamese` | Trains the Siamese network for 10 epochs and saves the best epoch to `outputs/siamese_best.pt` | about 23 minutes |
+| 4 | `python evaluate.py --data-dir ~/isic2020` | Fits calibration and thresholds on validation, scores the test split once, and saves the results and test figures | a few minutes |
+| 5 | `python predict.py --data-dir ~/isic2020` | Prints predictions for four random test images and saves `figures/example_predictions.png` | seconds |
+
+Useful options:
+
+- `--limit 512` on `train.py` or `evaluate.py` runs on a small random subset to check that everything works. These quick runs save their files with a `quicktest` name, so they never overwrite a full run.
+- `python predict.py --data-dir ~/isic2020 --failures` picks the most informative mistakes on the test split and saves `figures/failure_cases.png`.
+- `python predict.py --data-dir ~/isic2020 --images ISIC_0572205 ISIC_3937539` predicts specific images.
+- `python dataset.py --data-dir ~/isic2020 --check-pairs` checks that the Siamese training pairs are balanced.
+
+### Example output
+
+Running `python predict.py --data-dir ~/isic2020` prints:
+
+```
+Image         Truth       Baseline  decision            Siamese  decision           nearest mel nearest ben
+ISIC_0572205  melanoma        3.0%  specialist review     12.2%  urgent review            0.120       0.114
+ISIC_1729223  melanoma        2.4%  specialist review      9.1%  specialist review        0.159       0.134
+ISIC_3937539  benign         35.7%  urgent review         11.0%  urgent review            0.085       0.076
+ISIC_8009079  benign          0.0%  auto-clear             0.2%  auto-clear               0.057       0.030
+
+Saved figure to figures/example_predictions.png
+```
+
+The percentages are each model's calibrated chance of melanoma. The last two columns are the distances to the closest training melanoma and the closest benign training lesion in the Siamese network's embedding.
+
+### Files
+
+| File | Contents |
+|---|---|
+| `dataset.py` | Loading the metadata, removing duplicates, patient-level splitting, image transforms, and the single-image and pair datasets |
+| `modules.py` | The ResNet-18 backbone, the baseline classifier, the Siamese network, contrastive loss, and the nearest-neighbour distance calculation |
+| `train.py` | Training and validation loops for both models, saving the best epoch, and plotting the training curves |
+| `evaluate.py` | Calibration, thresholds, test metrics, confidence intervals, resource profiling and the test figures |
+| `predict.py` | Example predictions and failure cases, printed and shown as figures |
+| `utils.py` | Shared helpers for the device, random seeds, data loader settings and plot styling |
+
+### Reproducibility
+
+- **Fixed splits.** Patients are assigned to splits with a fixed seed (42), and the splits are saved as CSV files in `splits/`. Every later step reads these files, so both models always use exactly the same patients.
+- **Fixed training randomness.** `train.py` fixes the Python and PyTorch random seeds (42), which controls the order of the training images, the augmentations, the Siamese training pairs and the starting weights of the new final layers. The validation pair loss always uses the same 2,000 pairs, and the bootstrap confidence intervals in `evaluate.py` use a fixed seed.
+- **Checked by rerunning.** The baseline was trained twice from scratch on the same MacBook with the same seed, and every epoch gave identical losses and validation scores.
+- **Different hardware.** Apple, NVIDIA and CPU calculations add numbers in slightly different orders, so running on other hardware or other package versions may give slightly different numbers. The exact package versions are pinned in `requirements.txt` to limit this.
+- **Choosing the saved model.** Both models always train for the full 10 epochs. After each epoch the model is scored on the validation split, and it is saved only when the validation AUROC is the best so far. This keeps the best epoch, but it is not early stopping, because training does not end early.
+- **Test split used once.** Calibration, the balanced threshold and the routing thresholds are all chosen on the validation split. The test split is only scored once, by `evaluate.py`.
+
+## Pre-processing and Data Splits
+
+### Removing duplicates
+
+The ISIC 2020 training set has 33,126 images. The dataset authors report 425 pixel-identical duplicate images [3], and the CSV used here flags 434 rows as duplicates (marked with `tfrecord == -1`). These rows are removed before splitting, leaving 32,692 images. If duplicates were kept, the same image could end up in both training and testing, which would make the test results look better than they really are.
+
+### Patient-level split
+
+Each patient has a median of 12 images, and images from the same patient often share skin tone, lighting and camera. If one patient's images were spread across splits, the model could learn to recognise the patient rather than the lesion. To prevent this, every patient is assigned to exactly one split, and `dataset.py` checks that no patient appears in more than one.
+
+Melanoma is rare, so a random split could leave one split with very few melanomas. Patients are therefore split in two groups: the 428 patients with at least one melanoma, and the 1,628 patients with none. Each group is shuffled with a fixed seed (42) and divided 70/15/15, so every split gets a similar share of melanoma.
+
+| Split | Images | Patients | Melanomas | Melanoma share |
+|---|---|---|---|---|
+| Train | 23,232 | 1,440 | 413 | 1.78% |
+| Validation | 4,513 | 308 | 83 | 1.84% |
+| Test | 4,947 | 308 | 85 | 1.72% |
+
+### Why 70/15/15
+
+- **Training (70%)** gets most of the data, because the model has only 413 melanomas to learn from.
+- **Validation (15%)** is used to choose the best training epoch, fit the calibration, and set the routing thresholds. It needs enough melanomas (83) for these choices to be reliable, and it must be separate from the test split so the test result stays honest.
+- **Test (15%)** is used only once, at the end. With 85 melanomas, one missed melanoma changes the miss rate by about 1.2 percentage points, so a smaller test split would make the results too noisy. Confidence intervals are reported to show this uncertainty.
+
+### Image pre-processing
+
+The images are the 256x256 resized version of ISIC 2020 [6], which keeps the lesion detail while making loading much faster than the full-size originals.
+
+| Step | Training images | Validation and test images | Reason |
+|---|---|---|---|
+| Flips | Random horizontal and vertical flips | None | Dermoscopic images have no fixed "up" direction |
+| Rotation | Random rotation of up to 30 degrees | None | Same reason as flips |
+| Crop | Random 224x224 crop | Centre 224x224 crop | 224x224 is the input size ResNet-18 was pretrained on [9], and random crops add variety |
+| Colour | Small random changes to brightness, contrast and saturation (up to 20%) and hue (up to 2%) | None | Colour varies between clinics and cameras [3] |
+| Normalisation | ImageNet mean and standard deviation | Same | Matches the colour statistics the pretrained encoder expects [11] |
+
+Augmentation is only applied to training images, so validation and test results are the same every time they are run.
+
+![Sample training images](figures/sample_training_images.png)
+
+*Sample training images after loading, saved by `python dataset.py --data-dir ~/isic2020 --preview`.*
+
+### Handling class imbalance
+
+Only 1.78% of training images are melanoma, so a model trained without any correction would learn to predict benign almost every time.
+
+- **Baseline CNN.** The loss gives each melanoma image 55.3 times the weight of a benign image, which is the ratio of benign to melanoma images in the training split. This makes missing a melanoma as costly overall as misclassifying all the benign images.
+- **Siamese network.** Training pairs are drawn with two coin flips. The first image is melanoma or benign with equal chance, and the second image is from the same class or the other class with equal chance. This gives the four pair types (melanoma-melanoma, melanoma-benign, benign-benign and benign-melanoma) in equal numbers, so half of all images the network sees in training are melanomas. New pairs are drawn every epoch, with 11,616 pairs per epoch.
+
 ## Results
 
 All numbers below come from `evaluate.py`. Both models were scored on the same held-out test split of 4,947 images from 308 patients, of which 85 are melanomas. Calibration and every threshold were chosen on the validation split only, and the test split was scored once.
