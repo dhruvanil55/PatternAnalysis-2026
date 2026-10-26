@@ -514,6 +514,54 @@ The auto-clear thresholds were set so that no more than 5% of validation melanom
 - Remove or cover ruler markings, ink and dermoscope frames before training, to reduce shortcut learning.
 - Choose the auto-clear threshold with a safety margin on validation, for example allowing 3% of melanomas to be cleared instead of 5%, so that the test result is more likely to stay under the 5% target.
 
+## Recommendation
+
+**Summary for the project manager.** Neither model should be allowed to clear patients without a doctor yet. If the clinic wants to trial the tool, use the baseline CNN with a stricter auto-clear threshold, and run it alongside the specialists first so its decisions can be checked before any patient relies on them.
+
+### Which model to use
+
+The baseline CNN is recommended over the Siamese network.
+
+- **Both models rank lesions equally well.** The AUROC difference is 0.010, with a 95% interval of -0.008 to 0.028, so neither model is clearly better at telling melanoma from benign.
+- **The baseline's confidence is more trustworthy.** Routing only works if a model is less confident when it is wrong, so that its mistakes go to a doctor. The baseline scores 0.772 on this measure and the Siamese network 0.632. This answers the research question: the Siamese network does not produce better confidence scores than a standard classifier.
+- **The baseline is cheaper and simpler.** The Siamese network needs about twice the training memory (4.61 GB against 2.46 GB), is slightly slower per image, and must keep embeddings for all 23,232 training images. These have to be rebuilt every time the model is retrained.
+- **The Siamese network's advantages are not certain.** It auto-cleared more images (69.5% against 63.3%), missed one fewer melanoma on test, and was the only model to meet AC1. However, the confidence intervals for both models overlap, so these gains may not hold on new patients.
+
+The Siamese network's nearest training images are still useful for explaining a prediction to a specialist. They should be shown with care, because the failure analysis found that some matches are based on rulers and dermoscope frames rather than the lesion.
+
+### Routing rule
+
+| Group | Rule | Who sees it |
+|---|---|---|
+| Auto-clear | Below a threshold set on validation so that at most 3% of melanomas are cleared | No one, once the trial has shown it is safe |
+| Specialist review | Between the auto-clear threshold and 10% | A specialist, in the normal queue |
+| Urgent review | 10% chance of melanoma or above | A specialist, first |
+
+The 5% limit used in this project was met on validation but not on test (7.1% for the baseline). A 3% limit on validation leaves a safety margin for this difference. The 3% figure was chosen after seeing the test result, so it has not been tested here. Its effect needs to be measured by changing `MAX_MISSED_MELANOMA` in `evaluate.py` and checking it on new data. A stricter threshold will auto-clear fewer images.
+
+### Costs and benefits
+
+For every 1,000 images, using the test results of the baseline with the current 5% rule:
+
+| Outcome | Number of images |
+|---|---|
+| Melanomas among the 1,000 images | about 17 |
+| Auto-cleared, with no specialist review | 633 |
+| Sent to specialist review | 334 |
+| Sent to urgent review | 33 |
+| Melanomas wrongly auto-cleared | about 1.2 |
+
+- **Benefit.** Specialists would review about 37% of images instead of all of them. The urgent group is also far richer in melanoma than the full set (about 1 in 6 compared with 1 in 58), so the most likely melanomas are seen first.
+- **Cost.** About one melanoma in every 1,000 images would be cleared without review. The upper end of the confidence interval is 12.9% of melanomas, about 2.2 per 1,000 images. A missed melanoma can be fatal, so this rate is too high to accept without the trial and the stricter threshold.
+
+### Before deployment
+
+1. **Run a shadow trial.** Run the tool alongside specialists without clearing anything automatically, and compare its decisions with theirs.
+2. **Use more melanoma examples.** Adding images from earlier ISIC challenge datasets would help with unusual melanomas like rows 1 and 2 in the failure analysis, and would make the threshold more stable.
+3. **Remove image artefacts.** Covering rulers, ink and dermoscope frames before training would reduce the shortcut learning seen in the failure analysis.
+4. **Recheck calibration at each new clinic.** Different cameras and lighting can shift the probabilities, so calibration and thresholds should be checked on each clinic's own images before use.n
+
+
 ## Related Implementations and Documentation
 
 | Source | What it shows | Related part of this project |
