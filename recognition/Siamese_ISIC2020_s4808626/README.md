@@ -246,12 +246,14 @@ Run these commands in order from this folder. Each step saves the files the next
 | 1 | `python dataset.py --data-dir ~/isic2020 --preview` | Removes duplicates, splits patients into train, validation and test, checks for leakage, and saves the splits to `splits/` | under a minute |
 | 2 | `python train.py --data-dir ~/isic2020 --model baseline` | Trains the baseline CNN for 10 epochs and saves the best epoch to `outputs/baseline_best.pt` | about 21 minutes |
 | 3 | `python train.py --data-dir ~/isic2020 --model siamese` | Trains the Siamese network for 10 epochs and saves the best epoch to `outputs/siamese_best.pt` | about 23 minutes |
-| 4 | `python evaluate.py --data-dir ~/isic2020` | Fits calibration and thresholds on validation, scores the test split once, and saves the results and test figures | a few minutes |
+| 4 | `python train.py --data-dir ~/isic2020 --test` | Tests both saved models. It fits calibration and thresholds on validation, scores the test split once, and saves the results and test figures | a few minutes |
 | 5 | `python predict.py --data-dir ~/isic2020` | Prints predictions for four random test images and saves `figures/example_predictions.png` | seconds |
+
+Step 4 runs the testing code in `evaluate.py`, so `python evaluate.py --data-dir ~/isic2020` gives exactly the same results. Steps 3 and 4 can also be combined as `python train.py --data-dir ~/isic2020 --model siamese --test`, which trains the Siamese network and then tests both models.
 
 Useful options:
 
-- `--limit 512` on `train.py` or `evaluate.py` runs on a small random subset to check that everything works. These quick runs save their files with a `quicktest` name, so they never overwrite a full run.
+- `--limit 512` on `train.py` (including with `--test`) or `evaluate.py` runs on a small random subset to check that everything works. These quick runs save their files with a `quicktest` name, so they never overwrite a full run.
 - `python predict.py --data-dir ~/isic2020 --failures` picks the most informative mistakes on the test split and saves `figures/failure_cases.png`.
 - `python predict.py --data-dir ~/isic2020 --images ISIC_0572205 ISIC_3937539` predicts specific images.
 - `python dataset.py --data-dir ~/isic2020 --check-pairs` checks that the Siamese training pairs are balanced.
@@ -278,8 +280,8 @@ The percentages are each model's calibrated chance of melanoma. The last two col
 |---|---|
 | `dataset.py` | Loading the metadata, removing duplicates, patient-level splitting, image transforms, and the single-image and pair datasets |
 | `modules.py` | The ResNet-18 backbone, the baseline classifier, the Siamese network, contrastive loss, and the nearest-neighbour distance calculation |
-| `train.py` | Training and validation loops for both models, saving the best epoch, and plotting the training curves |
-| `evaluate.py` | Calibration, thresholds, test metrics, confidence intervals, resource profiling and the test figures |
+| `train.py` | Training and validation loops for both models, saving the best epoch, plotting the training curves, and the `--test` option that tests both saved models |
+| `evaluate.py` | Helper with the testing code used by `train.py --test`: calibration, thresholds, test metrics, confidence intervals, resource profiling and the test figures. It is a separate file because testing needs both trained models at once |
 | `predict.py` | Example predictions and failure cases, printed and shown as figures |
 | `utils.py` | Shared helpers for the device, random seeds, data loader settings and plot styling |
 
