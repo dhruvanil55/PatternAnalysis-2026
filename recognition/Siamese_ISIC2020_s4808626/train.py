@@ -8,6 +8,9 @@ Quick tests save to outputs/<model>_quicktest_*, so they never overwrite a full 
 Full training (saves the best model to outputs/<model>_best.pt):
     python train.py --data-dir ~/isic2020 --model baseline --epochs 10
     python train.py --data-dir ~/isic2020 --model siamese --epochs 10
+Testing both saved models on the test split (runs the evaluation in evaluate.py):
+    python train.py --data-dir ~/isic2020 --test
+    python train.py --data-dir ~/isic2020 --model siamese --test   # train, then test
 
 Standard methods used here (full references in README.md):
 - Fine-tuning an ImageNet-pretrained ResNet-18 [9], [11]
@@ -25,6 +28,8 @@ from sklearn.metrics import (average_precision_score, balanced_accuracy_score,
 from torch.utils.data import DataLoader, Subset
 
 from dataset import LesionDataset, PairDataset, get_transforms
+from evaluate import main as run_evaluation
+from evaluate import parse_args as evaluation_args
 from modules import (BaselineClassifier, ContrastiveLoss, SiameseNetwork,
                      class_distances, melanoma_probability)
 from utils import get_device, loader_settings, plot_history, set_seed
@@ -33,8 +38,10 @@ from utils import get_device, loader_settings, plot_history, set_seed
 def parse_args():
     parser = argparse.ArgumentParser(description="Train the ISIC 2020 melanoma models")
     parser.add_argument("--data-dir", required=True, help="Folder containing train/ images")
-    parser.add_argument("--model", choices=["baseline", "siamese"], default="baseline",
+    parser.add_argument("--model", choices=["baseline", "siamese"], default=None,
                         help="Which model to train")
+    parser.add_argument("--test", action="store_true",
+                        help="Test both saved models on the test split, after any training")
     parser.add_argument("--splits-dir", default="splits", help="Folder with the split CSVs")
     parser.add_argument("--epochs", type=int, default=10)
     parser.add_argument("--batch-size", type=int, default=64,
@@ -220,8 +227,8 @@ def evaluate_siamese(model, ref_loader, val_loader, loss_fn, device, k):
     return classification_metrics(probs, val_labels.numpy().astype(int), loss)
 
 
-def main():
-    args = parse_args()
+def train_model(args):
+    """Train one model and save the epoch with the best validation AUROC."""
     set_seed(args.seed)
     device = get_device()
     print(f"Using device: {device}  Model: {args.model}")
@@ -300,6 +307,37 @@ def main():
             best_auroc = val["auroc"]
             torch.save(model.state_dict(), out_dir / f"{run_name}_best.pt")
             print(f"  Saved new best model (val AUROC {best_auroc:.3f})", flush=True)
+
+
+def test_models(args):
+    """
+    Test both saved models on the test split.
+
+    The testing code is in evaluate.py, because it needs both trained models:
+    it fits calibration and thresholds on the validation split, then scores the
+    test split once and saves the results and figures.
+    """
+    missing = [m for m in ("baseline", "siamese")
+               if not (Path(args.out_dir) / f"{m}_best.pt").exists()]
+    if missing:
+        raise SystemExit(f"Train these models before testing: {', '.join(missing)}")
+    options = ["--data-dir", args.data_dir, "--splits-dir", args.splits_dir,
+               "--out-dir", args.out_dir, "--k", str(args.k),
+               "--batch-size", str(args.batch_size), "--workers", str(args.workers),
+               "--seed", str(args.seed)]
+    if args.limit:
+        options += ["--limit", str(args.limit)]
+    run_evaluation(evaluation_args(options))
+
+
+def main():
+    args = parse_args()
+    if args.model is None and not args.test:
+        raise SystemExit("Choose a model to train with --model, or use --test to test the saved models")
+    if args.model:
+        train_model(args)
+    if args.test:
+        test_models(args)
 
 
 if __name__ == "__main__":

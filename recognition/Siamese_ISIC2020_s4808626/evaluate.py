@@ -6,6 +6,8 @@ validation split only. The test split is then scored once.
 
 Run after both models are trained:
     python evaluate.py --data-dir ~/isic2020
+The same evaluation can also be started from train.py:
+    python train.py --data-dir ~/isic2020 --test
 Quick check that it runs, on small subsets (the numbers are not meaningful):
     python evaluate.py --data-dir ~/isic2020 --limit 512
 
@@ -44,7 +46,8 @@ MODEL_NAMES = {"baseline": "Baseline CNN", "siamese": "Siamese network"}
 MODEL_COLOURS = {"baseline": SERIES_COLOURS[0], "siamese": SERIES_COLOURS[1]}
 
 
-def parse_args():
+def parse_args(argv=None):
+    """Read the command-line options, or the list argv when called from train.py."""
     parser = argparse.ArgumentParser(description="Evaluate both ISIC 2020 models")
     parser.add_argument("--data-dir", required=True, help="Folder containing train/ images")
     parser.add_argument("--splits-dir", default="splits", help="Folder with the split CSVs")
@@ -58,7 +61,7 @@ def parse_args():
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--limit", type=int, default=None,
                         help="Use a random subset of each split, for quick tests")
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
 # ---------------------------------------------------------------------------
@@ -424,8 +427,9 @@ def to_builtin(value):
     return value
 
 
-def main():
-    args = parse_args()
+def main(args=None):
+    if args is None:
+        args = parse_args()
     set_seed(args.seed)
     device = get_device()
     out_dir = Path(args.out_dir)
