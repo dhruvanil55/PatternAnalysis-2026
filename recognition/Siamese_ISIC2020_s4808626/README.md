@@ -146,31 +146,6 @@ Add validation metrics (balanced accuracy, AUROC, PR-AUC and melanoma recall) to
 
 If the Siamese network stays below 0.80 balanced accuracy, first try triplet loss [12] or harder pairs (images that look alike but have different labels). If it still falls short, report the baseline as the working model and present the Siamese results as an honest negative finding.
 
-### References
-
-[1] Cancer Council Australia, "Melanoma." [Link](https://connect.cancer.org.au/cancer-information/types-of-cancer/melanoma)
-
-[2] National Cancer Institute, "Cancer Stat Facts: Melanoma of the Skin," SEER Program. [Link](https://seer.cancer.gov/statfacts/html/melan.html)
-
-[3] V. Rotemberg et al., "A patient-centric dataset of images and metadata for identifying melanomas using clinical context," *Scientific Data*, vol. 8, 34, 2021. [Link](https://arxiv.org/abs/2008.07360)
-
-[4] C. Guo, G. Pleiss, Y. Sun and K. Q. Weinberger, "On Calibration of Modern Neural Networks," in *Proc. ICML*, 2017. [Link](https://arxiv.org/abs/1706.04599)
-
-[5] Y. Geifman and R. El-Yaniv, "Selective Classification for Deep Neural Networks," in *Proc. NeurIPS*, 2017. [Link](https://arxiv.org/abs/1705.08500)
-
-[6] C. Deotte, "JPEG Melanoma 256x256," Kaggle dataset. [Link](https://www.kaggle.com/datasets/cdeotte/jpeg-melanoma-256x256)
-
-[7] G. Koch, R. Zemel and R. Salakhutdinov, "Siamese Neural Networks for One-shot Image Recognition," in *ICML Deep Learning Workshop*, 2015. [Link](https://www.cs.cmu.edu/~rsalakhu/papers/oneshot1.pdf)
-
-[8] R. Hadsell, S. Chopra and Y. LeCun, "Dimensionality Reduction by Learning an Invariant Mapping," in *Proc. CVPR*, 2006. [Link](http://yann.lecun.com/exdb/publis/pdf/hadsell-chopra-lecun-06.pdf)
-
-[9] K. He, X. Zhang, S. Ren and J. Sun, "Deep Residual Learning for Image Recognition," in *Proc. CVPR*, 2016. [Link](https://arxiv.org/abs/1512.03385)
-
-[10] P. Tschandl et al., "Diagnostic accuracy of content-based dermatoscopic image retrieval with deep classification features," *British Journal of Dermatology*, vol. 181, no. 1, 2019. [Link](https://doi.org/10.1111/bjd.17189)
-
-[11] J. Deng et al., "ImageNet: A Large-Scale Hierarchical Image Database," in *Proc. CVPR*, 2009. [Link](https://image-net.org/static_files/papers/imagenet_cvpr09.pdf)
-
-[12] F. Schroff, D. Kalenichenko and J. Philbin, "FaceNet: A Unified Embedding for Face Recognition and Clustering," in *Proc. CVPR*, 2015. [Link](https://arxiv.org/abs/1503.03832)
 
 ## Changes from the Feasibility Review
 
@@ -676,6 +651,15 @@ The tool is not ready for clinical use. Before it is:
 3. **Remove image artefacts.** Covering rulers, ink and dermoscope frames before training would test, and may reduce, the possible shortcut learning seen in the failure analysis.
 4. **Recheck calibration at each new clinic.** Different cameras and lighting can shift the probabilities, so calibration and thresholds should be checked on each clinic's own images before use.
 
+## Artificial Intelligence Usage Disclosure
+
+I used ChatGPT (GPT-6) to investigate duplicate-image handling in the ISIC 2020 melanoma dataset. My initial prompt was: *"Additionally i have those images from a dataset but i wanna delete duplicates from it.. i am using a kaggle database the isic challenege database for melanoma 2020".* ChatGPT informed me that the dataset provides an existing duplicate-image list and metadata that can assist with identifying duplicate entries. After learning about this resource, I investigated the dataset metadata further and developed my own approach to duplicate reduction. I independently implemented a Python function that filters the training metadata using the `tfrecord` column to exclude rows flagged as duplicates. I also used ChatGPT to review the approach and identify assumptions that needed verification, including whether the duplicate flag was correctly interpreted. This helped me consider how removing redundant samples could improve dataset quality and reduce the risk of data leakage when duplicates would otherwise appear across training, validation, and test sets.
+
+I also used ChatGPT (GPT-6) to improve my understanding of model confidence estimation, probability calibration, Platt scaling, and confidence-threshold selection for my ResNet-18 baseline and Siamese network. I used this guidance to understand how raw model scores can be converted into probability estimates and how thresholds can be selected to support the project's melanoma miss-rate acceptance criterion. I consulted the official scikit-learn documentation to understand the relevant methods, including logistic regression for sigmoid calibration and ROC curves for evaluating classification thresholds. Based on this understanding, I independently implemented the calibration, threshold-selection, and evaluation functions to suit my models and dataset. I also used ChatGPT to review aspects of the implementation, identify potential edge cases, and understand the distinction between meeting an observed validation-set miss-rate target and demonstrating that the target will generalise to unseen data.
+
+Furthermore, I used ChatGPT (GPT-6) to review my report and provide feedback on its structure, clarity, technical explanations, experimental analysis, and alignment with the assessment requirements. I used the feedback to identify areas where the methodology and results needed clearer explanations, and to improve the discussion of model performance, limitations, conclusions, and engineering recommendations. This process helped me communicate the reasoning behind my implementation choices and discuss the strengths and limitations of the proposed approach more clearly. I reviewed the suggestions and incorporated relevant improvements into my report rather than relying on AI-generated feedback without evaluation.
+
+Overall, ChatGPT was used as a supporting tool for conceptual learning, implementation feedback, and report refinement. I reviewed the information provided, consulted relevant official documentation, and made my own decisions about which suggestions were appropriate for the project. The final code, experimental analysis, interpretation of results, and engineering decisions reflect my own work informed by these resources.
 
 ## Related Implementations and Documentation
 
@@ -685,4 +669,34 @@ The tool is not ready for clinical use. Before it is:
 | [adambielski/siamese-triplet](https://github.com/adambielski/siamese-triplet) | PyTorch Siamese and triplet networks with an embedding network, contrastive loss and pair selection | `EmbeddingNet` and `ContrastiveLoss` in `modules.py`, balanced pairs in `dataset.py`, triplet loss as the planned fallback |
 | [SIIM-ISIC 2020 1st place solution](https://github.com/haqishen/SIIM-ISIC-Melanoma-Classification-1st-Place-Solution) | The winning Kaggle solution for this dataset, trained on the resized ISIC 2020 images | Data handling and augmentation choices in `dataset.py` |
 | [PyTorch transfer learning tutorial](https://docs.pytorch.org/tutorials/beginner/transfer_learning_tutorial.html) | Fine-tuning an ImageNet-pretrained ResNet-18 on a new task | `make_backbone` and `BaselineClassifier` in `modules.py` |
-| [scikit-learn: probability calibration](https://scikit-learn.org/stable/modules/calibration.html) | Platt (sigmoid) scaling for turning model scores into calibrated probabilities | `fit_calibration` in `evaluate.py` |
+| [scikit-learn: Probability calibration](https://scikit-learn.org/stable/modules/calibration.html) | Platt (sigmoid) scaling for turning model scores into calibrated probabilities | `fit_calibration` in `evaluate.py` |
+| [scikit-learn: LogisticRegression](https://scikit-learn.org/stable/modules/generated/sklearn.linear_model.LogisticRegression.html) | Logistic regression implementation used to fit the sigmoid calibration function | `fit_calibration` in `evaluate.py` |
+| [scikit-learn: roc_curve](https://scikit-learn.org/stable/modules/generated/sklearn.metrics.roc_curve.html) | Calculates true-positive and false-positive rates across classification thresholds, supporting threshold selection | `balanced_threshold` and `clear_threshold` in `evaluate.py` |
+| [scikit-learn: calibration_curve](https://scikit-learn.org/stable/modules/generated/sklearn.calibration.calibration_curve.html) | Compares predicted probabilities with observed positive-class frequencies to assess calibration | Calibration evaluation and expected calibration error analysis in `evaluate.py` |
+
+
+### References
+
+[1] Cancer Council Australia, "Melanoma." [Link](https://connect.cancer.org.au/cancer-information/types-of-cancer/melanoma)
+
+[2] National Cancer Institute, "Cancer Stat Facts: Melanoma of the Skin," SEER Program. [Link](https://seer.cancer.gov/statfacts/html/melan.html)
+
+[3] V. Rotemberg et al., "A patient-centric dataset of images and metadata for identifying melanomas using clinical context," *Scientific Data*, vol. 8, 34, 2021. [Link](https://arxiv.org/abs/2008.07360)
+
+[4] C. Guo, G. Pleiss, Y. Sun and K. Q. Weinberger, "On Calibration of Modern Neural Networks," in *Proc. ICML*, 2017. [Link](https://arxiv.org/abs/1706.04599)
+
+[5] Y. Geifman and R. El-Yaniv, "Selective Classification for Deep Neural Networks," in *Proc. NeurIPS*, 2017. [Link](https://arxiv.org/abs/1705.08500)
+
+[6] C. Deotte, "JPEG Melanoma 256x256," Kaggle dataset. [Link](https://www.kaggle.com/datasets/cdeotte/jpeg-melanoma-256x256)
+
+[7] G. Koch, R. Zemel and R. Salakhutdinov, "Siamese Neural Networks for One-shot Image Recognition," in *ICML Deep Learning Workshop*, 2015. [Link](https://www.cs.cmu.edu/~rsalakhu/papers/oneshot1.pdf)
+
+[8] R. Hadsell, S. Chopra and Y. LeCun, "Dimensionality Reduction by Learning an Invariant Mapping," in *Proc. CVPR*, 2006. [Link](http://yann.lecun.com/exdb/publis/pdf/hadsell-chopra-lecun-06.pdf)
+
+[9] K. He, X. Zhang, S. Ren and J. Sun, "Deep Residual Learning for Image Recognition," in *Proc. CVPR*, 2016. [Link](https://arxiv.org/abs/1512.03385)
+
+[10] P. Tschandl et al., "Diagnostic accuracy of content-based dermatoscopic image retrieval with deep classification features," *British Journal of Dermatology*, vol. 181, no. 1, 2019. [Link](https://doi.org/10.1111/bjd.17189)
+
+[11] J. Deng et al., "ImageNet: A Large-Scale Hierarchical Image Database," in *Proc. CVPR*, 2009. [Link](https://image-net.org/static_files/papers/imagenet_cvpr09.pdf)
+
+[12] F. Schroff, D. Kalenichenko and J. Philbin, "FaceNet: A Unified Embedding for Face Recognition and Clustering," in *Proc. CVPR*, 2015. [Link](https://arxiv.org/abs/1503.03832)
