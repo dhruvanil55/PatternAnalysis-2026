@@ -1,8 +1,9 @@
 """
-Data loading and patient-level splitting for the ISIC 2020 melanoma dataset.
+Data loading and patient-level splitting for the ISIC melanoma dataset
+resized to 224x224, as linked in the course task sheet.
 
 Standard methods and sources used here (full references in README.md):
-- ISIC 2020 dataset [3], using the resized 256x256 JPEG version [6]
+- ISIC melanoma images (ISIC 2020 [3] and earlier ISIC challenges), resized to 224x224 [6]
 - ImageNet colour normalisation for the pretrained backbone [11]
 - Training pairs for the Siamese network, as in Koch et al. [7] and
   Hadsell et al. [8]
@@ -24,15 +25,25 @@ SPLIT_FRACTIONS = {"train": 0.70, "val": 0.15, "test": 0.15}
 IMAGENET_MEAN = [0.485, 0.456, 0.406]
 IMAGENET_STD = [0.229, 0.224, 0.225]
 IMAGE_SIZE = 224
+# Layout of the downloaded dataset folder.
+METADATA_FILE = "cleaned_metadata.csv"
+IMAGE_FOLDER = "combined_images"
 
 
 def load_metadata(data_dir):
-    """Read train.csv and remove rows flagged as duplicate images."""
-    df = pd.read_csv(Path(data_dir) / "train.csv")
-    before = len(df)
-    # In this copy of the dataset, tfrecord == -1 marks a duplicate image.
-    df = df[df["tfrecord"] != -1].reset_index(drop=True)
-    print(f"Removed {before - len(df)} duplicate rows, {len(df)} images remain")
+    """
+    Read cleaned_metadata.csv and give it the column names used everywhere else.
+
+    This copy of the dataset is already cleaned, so no rows are removed. Images
+    without a real patient ID have a "dummy_" ID, so each is split on its own.
+    """
+    df = pd.read_csv(Path(data_dir) / METADATA_FILE)
+    df = df.rename(columns={"isic_id": "image_name"})
+    df["target"] = df["target"].astype(int)
+    assert not df["image_name"].duplicated().any(), "An image appears twice in the CSV"
+    no_patient = df["patient_id"].str.startswith("dummy").sum()
+    print(f"Loaded {len(df)} images, {int(df['target'].sum())} melanoma. "
+          f"{no_patient} images have no real patient ID")
     return df
 
 
@@ -100,17 +111,19 @@ def get_transforms(train):
     """
     Image preparation steps.
 
-    Training images get random flips, rotations, crops and colour changes so
-    the model sees varied versions of each lesion. Lesion photos have no fixed
-    "up" direction, and colour varies between clinics and cameras.
-    Validation and test images are only centre-cropped, so results are repeatable.
+    Training images get random flips, rotations, zoomed crops and colour
+    changes so the model sees varied versions of each lesion. Lesion photos have
+    no fixed "up" direction, and colour varies between clinics and cameras.
+    The images are already 224x224, so the crop covers 80 to 100% of the image
+    and is resized back to 224x224.
+    Validation and test images are used as they are, so results are repeatable.
     """
     if train:
         return transforms.Compose([
             transforms.RandomHorizontalFlip(),
             transforms.RandomVerticalFlip(),
             transforms.RandomRotation(30),
-            transforms.RandomCrop(IMAGE_SIZE),
+            transforms.RandomResizedCrop(IMAGE_SIZE, scale=(0.8, 1.0), ratio=(1.0, 1.0)),
             transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.02),
             transforms.ToTensor(),
             transforms.Normalize(IMAGENET_MEAN, IMAGENET_STD),
@@ -150,7 +163,7 @@ class LesionDataset(Dataset):
 def save_preview(data_dir, splits_dir, out_path, n_per_class=8, seed=0):
     """Save a grid of augmented training images, half melanoma and half benign."""
     dataset = LesionDataset(
-        Path(splits_dir) / "train.csv", Path(data_dir) / "train", get_transforms(train=True)
+        Path(splits_dir) / "train.csv", Path(data_dir) / IMAGE_FOLDER, get_transforms(train=True)
     )
 
     # Check that a batch loads with the expected shapes.
@@ -235,7 +248,8 @@ class PairDataset(Dataset):
 def check_pairs(data_dir, splits_dir, n=10000, seed=0):
     """Count pair types over many samples to confirm the 50/50 coin flips work."""
     random.seed(seed)
-    pairs = PairDataset(Path(splits_dir) / "train.csv", Path(data_dir) / "train", transform=None)
+    pairs = PairDataset(Path(splits_dir) / "train.csv", Path(data_dir) / IMAGE_FOLDER,
+                        transform=None)
     labels = pairs.images.df["target"]
 
     counts = {"melanoma-melanoma": 0, "melanoma-benign": 0, "benign-benign": 0, "benign-melanoma": 0}
@@ -253,8 +267,9 @@ def check_pairs(data_dir, splits_dir, n=10000, seed=0):
     print(f"Share of images in pairs that are melanoma: {100 * melanoma_seen / (2 * n):.1f}%")
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Create patient-level ISIC 2020 splits")
-    parser.add_argument("--data-dir", required=True, help="Folder containing train.csv and train/")
+    parser = argparse.ArgumentParser(description="Create patient-level ISIC splits")
+    parser.add_argument("--data-dir", required=True,
+                        help="Folder containing cleaned_metadata.csv and combined_images/")
     parser.add_argument("--out-dir", default="splits", help="Where to save the split CSVs")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--preview", action="store_true", help="Also save a grid of sample images")

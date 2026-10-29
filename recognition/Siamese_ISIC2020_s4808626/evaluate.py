@@ -35,7 +35,7 @@ from sklearn.metrics import (average_precision_score, balanced_accuracy_score,
                              precision_score, recall_score, roc_auc_score, roc_curve)
 from torch.utils.data import DataLoader
 
-from dataset import LesionDataset, get_transforms
+from dataset import IMAGE_FOLDER, LesionDataset, get_transforms
 from modules import (BaselineClassifier, ContrastiveLoss, SiameseNetwork, class_distances,
                      count_parameters)
 from utils import GRID, INK, MUTED, SERIES_COLOURS, get_device, loader_settings, set_seed
@@ -49,7 +49,7 @@ MODEL_COLOURS = {"baseline": SERIES_COLOURS[0], "siamese": SERIES_COLOURS[1]}
 def parse_args(argv=None):
     """Read the command-line options, or the list argv when called from train.py."""
     parser = argparse.ArgumentParser(description="Evaluate both ISIC 2020 models")
-    parser.add_argument("--data-dir", required=True, help="Folder containing train/ images")
+    parser.add_argument("--data-dir", required=True, help="Dataset folder containing combined_images/")
     parser.add_argument("--splits-dir", default="splits", help="Folder with the split CSVs")
     parser.add_argument("--out-dir", default="outputs", help="Where the trained models are")
     parser.add_argument("--k", type=int, default=10,
@@ -436,7 +436,7 @@ def main(args=None):
     prefix = "quicktest_" if args.limit else ""
     figure_dir = out_dir if args.limit else Path("figures")
     figure_dir.mkdir(parents=True, exist_ok=True)
-    image_dir = Path(args.data_dir).expanduser() / "train"
+    image_dir = Path(args.data_dir).expanduser() / IMAGE_FOLDER
     print(f"Using device: {device}", flush=True)
 
     # Measure training memory first, before anything else is on the GPU.

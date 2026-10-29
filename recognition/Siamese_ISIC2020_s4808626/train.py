@@ -27,7 +27,7 @@ from sklearn.metrics import (average_precision_score, balanced_accuracy_score,
                              recall_score, roc_auc_score)
 from torch.utils.data import DataLoader, Subset
 
-from dataset import LesionDataset, PairDataset, get_transforms
+from dataset import IMAGE_FOLDER, LesionDataset, PairDataset, get_transforms
 from evaluate import main as run_evaluation
 from evaluate import parse_args as evaluation_args
 from modules import (BaselineClassifier, ContrastiveLoss, SiameseNetwork,
@@ -37,7 +37,7 @@ from utils import get_device, loader_settings, plot_history, set_seed
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Train the ISIC 2020 melanoma models")
-    parser.add_argument("--data-dir", required=True, help="Folder containing train/ images")
+    parser.add_argument("--data-dir", required=True, help="Dataset folder containing combined_images/")
     parser.add_argument("--model", choices=["baseline", "siamese"], default=None,
                         help="Which model to train")
     parser.add_argument("--test", action="store_true",
@@ -233,7 +233,7 @@ def train_model(args):
     device = get_device()
     print(f"Using device: {device}  Model: {args.model}")
 
-    image_dir = Path(args.data_dir).expanduser() / "train"
+    image_dir = Path(args.data_dir).expanduser() / IMAGE_FOLDER
     train_csv = Path(args.splits_dir) / "train.csv"
     val_csv = Path(args.splits_dir) / "val.csv"
     out_dir = Path(args.out_dir)

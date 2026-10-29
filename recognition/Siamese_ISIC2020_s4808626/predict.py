@@ -23,7 +23,7 @@ import torch
 from PIL import Image
 from torchvision import transforms
 
-from dataset import IMAGE_SIZE, get_transforms
+from dataset import IMAGE_FOLDER, IMAGE_SIZE, get_transforms
 from evaluate import load_models, route, sigmoid
 from modules import class_distances
 from utils import INK, MUTED, get_device
@@ -33,7 +33,7 @@ N_SHOWN = 3  # nearest reference images shown per class
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Show example predictions")
-    parser.add_argument("--data-dir", required=True, help="Folder containing train/ images")
+    parser.add_argument("--data-dir", required=True, help="Dataset folder containing combined_images/")
     parser.add_argument("--splits-dir", default="splits", help="Folder with the split CSVs")
     parser.add_argument("--out-dir", default="outputs", help="Where the trained models are")
     parser.add_argument("--images", nargs="+", help="Image names to predict, e.g. ISIC_0149568")
@@ -188,7 +188,7 @@ def main():
     device = get_device()
     out_dir = Path(args.out_dir)
     prefix = "quicktest_" if args.quicktest else ""
-    image_dir = Path(args.data_dir).expanduser() / "train"
+    image_dir = Path(args.data_dir).expanduser() / IMAGE_FOLDER
 
     with open(out_dir / f"{prefix}evaluation_results.json") as f:
         results = json.load(f)

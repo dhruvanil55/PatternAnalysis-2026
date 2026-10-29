@@ -6,3 +6,6 @@ __pycache__/
 .DS_Store
 outputs/
 *.pt
+archive*/
+archive*.zip
+.DS_Store
