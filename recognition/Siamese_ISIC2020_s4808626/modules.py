@@ -123,8 +123,10 @@ def melanoma_probability(mel_dist, ben_dist, scale=1.0):
 
     An image closer to melanoma references than benign ones gets a probability
     above 0.5, and one equally close to both gets 0.5, meaning unsure. `scale`
-    controls how fast confidence grows with the gap and is tuned on the
-    validation split so confidence matches real accuracy.
+    controls how fast the probability changes with the gap. It is only used
+    during training, with scale=1.0, to score the validation split after each
+    epoch. The final calibrated probabilities come from Platt scaling in
+    evaluate.py.
     """
     return torch.sigmoid(scale * (ben_dist - mel_dist))
 

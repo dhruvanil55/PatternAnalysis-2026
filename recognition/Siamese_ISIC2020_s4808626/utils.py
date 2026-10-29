@@ -1,5 +1,5 @@
 """
-Shared helpers used by train.py and predict.py.
+Shared helpers used by train.py, evaluate.py and predict.py.
 """
 import random
 from pathlib import Path
