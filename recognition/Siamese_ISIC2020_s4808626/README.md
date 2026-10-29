@@ -1,4 +1,4 @@
-# Siamese Network for Melanoma Classification (ISIC 2020)
+# Siamese Network for Melanoma Classification (ISIC)
 
 ## Feasibility Review
 
@@ -12,14 +12,14 @@ The clinic needs a triage assistant that:
 
 1. **Separates melanoma from benign lesions reliably**, so suspicious lesions reach a specialist sooner and clearly benign ones do not use up review time (tested by AC1).
 2. **Rarely misses a melanoma.** A missed melanoma can be fatal, while a false alarm costs only one extra specialist review, so the tool must favour catching melanoma over avoiding false alarms (AC4).
-3. **Knows when it is unsure.** Only 1.8% of images are melanoma and many benign lesions look like melanoma [3], so some cases will be genuinely hard. Deep networks are often confidently wrong [4], so the clinic needs a confidence score it can trust. Uncertain cases must go to a specialist instead of being decided automatically, an approach known as selective prediction or a reject option [5] (AC4).
+3. **Knows when it is unsure.** Melanoma is a minority of images (21.5% in the dataset used here, and under 2% in ISIC 2020 screening images [3]), and many benign lesions look like melanoma, so some cases will be genuinely hard. Deep networks are often confidently wrong [4], so the clinic needs a confidence score it can trust. Uncertain cases must go to a specialist instead of being decided automatically, an approach known as selective prediction or a reject option [5] (AC4).
 4. **Holds up on new patients.** The tool will only ever see patients it was not trained on, so its reported performance must come from patients it has never seen (AC2).
 5. **Fits into the existing workflow**, running on modest hardware and returning a result quickly enough not to slow down review (AC5).
 
 **Scope**
 
 In scope:
-- Binary classification of a single dermoscopic image as melanoma or benign, using the ISIC 2020 training set (33,126 images, 2,056 patients, 584 melanomas) [3], resized to 256x256 pixels [6].
+- Binary classification of a single dermoscopic image as melanoma or benign, using the ISIC melanoma images resized to 224x224 that the task sheet links [6] (24,493 images, 5,266 melanomas). They combine ISIC 2020 [3] with earlier ISIC collections, including HAM10000 [13].
 - A confidence score for every prediction, and a rule that routes low-confidence cases to human review [5].
 - A Siamese network [7] compared against a baseline CNN classifier on identical data splits.
 - Training and evaluation on a GPU node of UQ's Rangpur HPC cluster, with development and small test runs on a MacBook (M5 Pro, 48 GB).
@@ -38,13 +38,13 @@ Out of scope:
 
 #### AC1. Classification performance
 - **Target:** Balanced accuracy of at least 0.80 on the held-out test split.
-- **Why:** Only 1.8% of images are melanoma [3], so a model that always predicts benign scores 98% plain accuracy. Balanced accuracy averages the recall of both classes, so it cannot be gamed this way.
+- **Why:** Only 21.5% of images are melanoma, so a model that always predicts benign scores about 78.5% plain accuracy. Balanced accuracy averages the recall of both classes, so it cannot be gamed this way.
 - **How it is tested:** The decision threshold is chosen on the validation split only, then applied once to the test split.
 
 #### AC2. Data hygiene and leakage prevention
-- **Target:** Zero patients shared between the train, validation and test splits, and zero flagged duplicate images remaining.
-- **Why:** If one patient appears in both training and testing, the model can recognise the person's skin rather than the lesion, inflating test scores. The dataset authors report 425 pixel-identical duplicate images [3], and the CSV used here flags 434 rows as duplicates.
-- **How it is tested:** The splitting code asserts that the patient ID sets of the three splits do not overlap, and duplicates are removed before splitting.
+- **Target:** Zero patient IDs shared between the train, validation and test splits, and zero duplicate images.
+- **Why:** If one patient appears in both training and testing, the model can recognise the person's skin rather than the lesion, inflating test scores. Public copies of ISIC 2020 are known to contain duplicate images, so the same photo could otherwise appear in both training and testing.
+- **How it is tested:** The splitting code asserts that the patient ID sets of the three splits do not overlap, and every image's pixels are hashed to check for duplicates before splitting.
 
 #### AC3. Baseline comparison
 - **Target:** The Siamese network and the baseline CNN classifier are evaluated on the identical test split under the controlled conditions above.
@@ -65,26 +65,26 @@ Out of scope:
 
 **Chosen project and difficulty**
 
-Siamese network for melanoma versus benign classification on the ISIC 2020 Kaggle data, listed as **Hard** difficulty in the course specification. A baseline CNN classifier is built alongside it so the two can be compared under identical conditions.
+Siamese network for melanoma versus benign classification on the ISIC melanoma data linked in the task sheet, listed as **Hard** difficulty in the course specification. A baseline CNN classifier is built alongside it so the two can be compared under identical conditions.
 
 **Dataset configuration**
 
 | Setting | Choice | Reason |
 |---|---|---|
-| Source | ISIC 2020 training set, 256x256 resized JPEGs [3], [6], copied to Rangpur | The official test set has no public labels, so all evaluation uses splits made from the labelled training set. The resized copy keeps lesion detail while keeping storage and loading time manageable |
-| Cleaning | Remove the 434 rows flagged as duplicates | Stops identical images appearing in both training and testing [3] |
+| Source | ISIC melanoma images resized to 224x224 [6], combining ISIC 2020 [3] and earlier ISIC collections [13], copied to Rangpur | The dataset linked in the task sheet. All images are labelled, so train, validation and test splits are made from it. The resized copy keeps lesion detail while keeping storage and loading time manageable |
+| Cleaning | Check for duplicate images by hashing their pixels | Stops identical images appearing in both training and testing |
 | Split | 70% train, 15% validation, 15% test, split by patient | Every image from a patient stays in one split, so the model is tested on people it has never seen |
-| Stratification | Patients with at least one melanoma (428) and without (1,628) are split separately | Each split gets a similar share of melanoma, which matters when there are only 584 positive images [3] |
-| Input | Random 224x224 crop from the 256x256 image, ImageNet colour normalisation | Matches the input the pretrained encoder was trained on [9], [11] |
+| Stratification | Patient IDs with at least one melanoma (5,079) and without (9,867) are split separately | Each split gets a similar share of melanoma |
+| Input | 224x224 images with ImageNet colour normalisation, and random zoomed crops for training | Matches the input the pretrained encoder was trained on [9], [11] |
 | Augmentation | Random flips, rotations and mild colour changes on training images only | Dermoscopic images have no fixed "up" direction, and colour varies between clinics and cameras [3] |
 
 **Model architecture**
 
-*Baseline CNN classifier.* An ImageNet-pretrained ResNet-18 [9] with its final layer replaced by a single output that gives the probability of melanoma. It is trained with binary cross-entropy, with melanoma cases weighted more heavily to offset the 1.8% class share. This is the standard way to approach the problem, so it is the fair point of comparison.
+*Baseline CNN classifier.* An ImageNet-pretrained ResNet-18 [9] with its final layer replaced by a single output that gives the probability of melanoma. It is trained with binary cross-entropy, with melanoma cases weighted more heavily to offset the 21.5% class share. This is the standard way to approach the problem, so it is the fair point of comparison.
 
 *Siamese network.* Two copies of the same ResNet-18 encoder with shared weights [7]. Each image is mapped to a 128-number embedding, scaled to unit length. Training uses pairs of images and contrastive loss [8]: pairs from the same class are pulled together and pairs from different classes are pushed at least a set distance apart.
 
-- **Pair generation strategy.** The anchor image is drawn as melanoma half the time and benign half the time, and its partner is the same class half the time. This gives equal numbers of the four pair types (melanoma-melanoma, melanoma-benign, benign-benign, benign-melanoma), so the rare class is seen far more often than its natural 1.8% share. New pairs are drawn every epoch, so the 584 melanomas form many different pairs and the model is less likely to memorise them.
+- **Pair generation strategy.** The anchor image is drawn as melanoma half the time and benign half the time, and its partner is the same class half the time. This gives equal numbers of the four pair types (melanoma-melanoma, melanoma-benign, benign-benign, benign-melanoma), so melanoma is seen far more often than its natural 21.5% share. New pairs are drawn every epoch, so the training melanomas form many different pairs and the model is less likely to memorise them.
 - **Making a prediction.** A new image is embedded and compared to a bank of labelled training images. For each class, the average distance to its 10 nearest reference images is computed. Taking the nearest neighbours of each class separately stops the large benign majority from outvoting melanoma. The two distances are turned into a melanoma probability, with a scaling factor tuned on the validation split so the confidence is well calibrated [4].
 - **Why this suits the problem.** Classifying by comparison to confirmed cases mirrors how image retrieval has been used to support dermoscopic diagnosis [10]. It also gives an interpretable signal: a lesion that sits close to both melanoma and benign references is visibly ambiguous, and the nearest reference images can be shown to a specialist as evidence.
 
@@ -95,9 +95,9 @@ Siamese network for melanoma versus benign classification on the ISIC 2020 Kaggl
 | Concept | Where it is used |
 |---|---|
 | Convolutional neural networks and residual connections | ResNet-18 encoder in both models [9] |
-| Transfer learning | Starting from ImageNet-pretrained weights [11] rather than random weights, since 584 melanomas are too few to train a deep network from scratch |
+| Transfer learning | Starting from ImageNet-pretrained weights [11] rather than random weights, since about 5,000 melanomas are too few to train a deep network from scratch |
 | Metric learning | Siamese network with shared weights and contrastive loss [7], [8]. Triplet loss [12] was considered and is a possible later experiment |
-| Data augmentation | Flips, rotations and colour changes to reduce overfitting on the small melanoma class |
+| Data augmentation | Flips, rotations, zoomed crops and colour changes to reduce overfitting on the smaller melanoma class |
 | Class imbalance | Weighted loss for the baseline, balanced pair sampling for the Siamese network, and evaluation with balanced accuracy and PR-AUC |
 | Evaluation and model selection | Threshold and calibration chosen on the validation split only, with the test split used once at the end |
 | Calibration and uncertainty | ECE, reliability diagrams and a reject option for routing cases to specialists [4], [5] |
@@ -111,15 +111,16 @@ Run with pandas on the downloaded dataset:
 
 | Check | Result | What it means |
 |---|---|---|
-| Images | 33,126 | Matches the official count [3] |
-| Patients | 2,056, median 12 images each, max 115 | Must split by patient to avoid leakage |
-| Melanoma images | 584 (1.8%) | Need balanced metrics and balanced training |
-| Patients with a melanoma | 428 | Enough to spread across all three splits |
-| Flagged duplicates | 434 (paper reports 425 [3]) | Remove before splitting |
+| Images | 24,493, all 224x224 | Ready for the pretrained encoder without resizing |
+| Melanoma images | 5,266 (21.5%) | Need balanced metrics and balanced training |
+| Patient IDs | 4,432 real IDs, up to 43 images each, plus 10,794 images with no patient ID | Must split by patient where possible to avoid leakage |
+| Patient IDs with a melanoma | 5,079 (counting each image without an ID on its own) | Enough to spread across all three splits |
+| Image sources | ISIC 2020 (5.2% melanoma), HAM10000 (24.4%) and other ISIC images (37.7%) | Melanoma share differs strongly by source |
+| Duplicate images | None, checked by hashing every image's pixels | No removal needed |
 
 #### 3.2 Training Time and Resource Estimate
 
-Measured: a 3-epoch baseline run on the full training split (23,232 images, batch size 64) took about 2 minutes per epoch (116 to 124 seconds) on the MacBook (M5 Pro, Apple GPU). The average training loss fell each epoch, from 1.07 to 0.94 to 0.88, confirming the data pipeline and training loop work end to end.
+Measured: the first 3 epochs of a baseline run on the full training split (17,049 images, batch size 64) took about 1.5 minutes each (89 to 105 seconds) on the MacBook (M5 Pro, Apple GPU). The average training loss fell each epoch, from 0.69 to 0.60 to 0.57, confirming the data pipeline and training loop work end to end.
 
 Estimated: ResNet-18 has about 11 million parameters. At batch size 64, the baseline should need roughly 3 to 5 GB of GPU memory and the Siamese network about 5 to 7 GB, since it processes two images per pair. Both fit the 16 GB limit. Memory had not been measured at this stage (see Resource profiling in the Results section for the measured values).
 
@@ -129,14 +130,15 @@ Estimated: ResNet-18 has about 11 million parameters. At batch size 64, the base
 
 | Risk | Plan |
 |---|---|
-| Only about 400 melanomas for training | Balanced pairs, augmentation and pretrained weights |
+| 10,794 images have no patient ID | Split them one image at a time, and report possible leakage as a limitation |
+| Melanoma share differs strongly between image sources | Check failure cases for source effects and report it as a limitation |
 | Confident wrong predictions | Tune confidence on validation data and check reliability diagrams |
-| Small test set (about 90 melanomas) gives noisy results | Report confidence intervals by resampling the test set |
+| Test results may vary with the sample of patients | Report confidence intervals by resampling the test set |
 | Training time on a laptop | Quick tests on a small random subset (`--limit`) before full runs, and keep the best epoch so runs are not repeated |
 
 #### 4.2 Budget
 
-About 20 minutes per 10-epoch run at the measured 2 minutes per epoch. Around 15 runs across both models comes to roughly 5 hours of training on the MacBook.
+About 15 minutes per 10-epoch run at the measured 1.5 minutes per epoch. Around 15 runs across both models comes to roughly 4 hours of training on the MacBook.
 
 #### 4.3 Next Experiment
 
@@ -149,11 +151,11 @@ If the Siamese network stays below 0.80 balanced accuracy, first try triplet los
 
 ## Changes from the Feasibility Review
 
-**Compute.** The feasibility review planned to train on UQ's Rangpur cluster, with a MacBook used for development and small tests. After testing, all training and evaluation were done on the MacBook (M5 Pro, 48 GB, Apple GPU) instead. A full baseline epoch over 23,232 training images took about 2 minutes, so a 10-epoch run finishes in roughly 20 minutes, and peak training memory was 2.46 GB for the baseline and 4.61 GB for the Siamese network. That was fast enough to iterate without cluster queue times or copying the dataset to Rangpur. The memory target was also lowered from 16 GB to 8 GB, so the models would fit on an entry-level GPU.
+**Compute.** The feasibility review planned to train on UQ's Rangpur cluster, with a MacBook used for development and small tests. After testing, all training and evaluation were done on the MacBook (M5 Pro, 48 GB, Apple GPU) instead. A baseline epoch over 17,049 training images took about 1.5 minutes, so a 10-epoch run finishes in about 15 minutes. Peak training memory was 2.46 GB for the baseline and 4.61 GB for the Siamese network. That was fast enough to iterate without cluster queue times or copying the dataset to Rangpur. The memory target was also lowered from 16 GB to 8 GB, so the models would fit on an entry-level GPU.
 
 **Calibration.** The feasibility review planned to turn the Siamese distances into a probability with a single scaling factor. The final version uses Platt scaling for both models instead. It fits two numbers (a scale and an offset) on the validation split, so the baseline and Siamese probabilities are calibrated in the same way and can be compared fairly [4].
 
-**Routing.** The feasibility review described a single threshold between automatic decisions and human review. The final version uses three groups: auto-clear, specialist review and urgent review. The urgent group (10% chance of melanoma or above) was added so that the most suspicious lesions are seen first, and so that both models have a working specialist review group.
+**Routing.** The feasibility review described a single threshold between automatic decisions and human review. The final version uses three groups: auto-clear, specialist review and urgent review, so that the most suspicious lesions are seen first. Urgent review uses each model's balanced threshold, chosen on the validation split, so urgent means the model predicts melanoma, and the images between the auto-clear and balanced thresholds are the uncertain cases sent to specialist review.
 
 **Effect on results.** Apple and NVIDIA GPUs do floating-point maths slightly differently, so rerunning on Rangpur with the same seed may give slightly different numbers. Both models were trained and tested on the same MacBook, so the comparison between them is unaffected.
 
@@ -687,7 +689,7 @@ Overall, ChatGPT was used as a supporting tool for conceptual learning, implemen
 
 [5] Y. Geifman and R. El-Yaniv, "Selective Classification for Deep Neural Networks," in *Proc. NeurIPS*, 2017. [Link](https://arxiv.org/abs/1705.08500)
 
-[6] C. Deotte, "JPEG Melanoma 256x256," Kaggle dataset. [Link](https://www.kaggle.com/datasets/cdeotte/jpeg-melanoma-256x256)
+[6] Roua, "ISIC Melanoma Dataset Resized to 224x224," Kaggle dataset. [Link](https://www.kaggle.com/datasets/roua91/isic-melanoma-dataset-resized-to-224x224)
 
 [7] G. Koch, R. Zemel and R. Salakhutdinov, "Siamese Neural Networks for One-shot Image Recognition," in *ICML Deep Learning Workshop*, 2015. [Link](https://www.cs.cmu.edu/~rsalakhu/papers/oneshot1.pdf)
 
@@ -700,3 +702,5 @@ Overall, ChatGPT was used as a supporting tool for conceptual learning, implemen
 [11] J. Deng et al., "ImageNet: A Large-Scale Hierarchical Image Database," in *Proc. CVPR*, 2009. [Link](https://image-net.org/static_files/papers/imagenet_cvpr09.pdf)
 
 [12] F. Schroff, D. Kalenichenko and J. Philbin, "FaceNet: A Unified Embedding for Face Recognition and Clustering," in *Proc. CVPR*, 2015. [Link](https://arxiv.org/abs/1503.03832)
+
+[13] P. Tschandl, C. Rosendahl and H. Kittler, "The HAM10000 dataset, a large collection of multi-source dermatoscopic images of common pigmented skin lesions," *Scientific Data*, vol. 5, 180161, 2018. [Link](https://doi.org/10.1038/sdata.2018.161)
