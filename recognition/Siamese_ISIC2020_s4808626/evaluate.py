@@ -41,7 +41,6 @@ from modules import (BaselineClassifier, ContrastiveLoss, SiameseNetwork, class_
 from utils import GRID, INK, MUTED, SERIES_COLOURS, get_device, loader_settings, set_seed
 
 MAX_MISSED_MELANOMA = 0.05  # AC4: automatically cleared cases may miss at most 5% of melanomas
-URGENT_PROBABILITY = 0.10   # urgent review when the calibrated chance of melanoma is at least 1 in 10
 MODEL_NAMES = {"baseline": "Baseline CNN", "siamese": "Siamese network"}
 MODEL_COLOURS = {"baseline": SERIES_COLOURS[0], "siamese": SERIES_COLOURS[1]}
 
@@ -167,8 +166,9 @@ def route(probs, t_clear, t_urgent):
     auto-clear (below t_clear), urgent review (at or above t_urgent),
     otherwise routine specialist review.
 
-    t_urgent is a calibrated probability (URGENT_PROBABILITY), so it means the
-    same thing for both models: at least a 1 in 10 chance of melanoma.
+    t_urgent is the model's balanced threshold, so urgent review means the
+    model predicts melanoma. Images between t_clear and t_urgent are the
+    uncertain cases that go to routine specialist review.
     """
     decisions = np.full(len(probs), "specialist review", dtype=object)
     decisions[probs < t_clear] = "auto-clear"
@@ -473,8 +473,9 @@ def main(args=None):
         val_probs = sigmoid(calibration[0] * scores[model]["val"] + calibration[1])
         thresholds[model] = {"balanced": balanced_threshold(val_probs, labels["val"]),
                              "clear": clear_threshold(val_probs, labels["val"])}
-        # Urgent starts at a 1 in 10 chance, and never below the auto-clear line.
-        thresholds[model]["urgent"] = max(URGENT_PROBABILITY, thresholds[model]["clear"])
+        # Urgent when the model predicts melanoma, and never below the auto-clear line.
+        thresholds[model]["urgent"] = max(thresholds[model]["balanced"],
+                                          thresholds[model]["clear"])
 
         # Apply them once to the test split.
         test_scores = scores[model]["test"]
@@ -509,7 +510,7 @@ def main(args=None):
                                        "ms_per_image": timing[model]}
     results["confidence_intervals_95"] = intervals
     results["settings"] = {"k": args.k, "max_missed_melanoma": MAX_MISSED_MELANOMA,
-                           "urgent_probability": URGENT_PROBABILITY,
+                           "urgent_rule": "balanced threshold",
                            "bootstrap_resamples": args.bootstrap, "limit": args.limit,
                            "device": str(device)}
 
