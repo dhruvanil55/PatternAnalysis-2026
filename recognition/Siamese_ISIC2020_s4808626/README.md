@@ -204,17 +204,17 @@ pip install -r requirements.txt
 
 ### Dataset
 
-Download the resized ISIC 2020 images, "JPEG Melanoma 256x256" by Chris Deotte, from Kaggle [6]. Unzip it so the folder looks like this:
+Download "ISIC Melanoma Dataset Resized to 224x224" from Kaggle [6], the dataset linked in the course task sheet. Unzip it and rename the folder so it looks like this:
 
 ```
-~/isic2020/
-    train.csv
-    train/
-        ISIC_0015719.jpg
+~/isic224/
+    cleaned_metadata.csv
+    combined_images/
+        ISIC_0000000.jpg
         ...
 ```
 
-Only `train.csv` and the `train/` folder are used. The dataset and trained models are not committed to this repository.
+`cleaned_metadata.csv` has three columns: `isic_id`, `patient_id` and `target` (1 for melanoma, 0 otherwise). The dataset and trained models are not committed to this repository.
 
 ### Running the pipeline
 
@@ -222,31 +222,31 @@ Run these commands in order from this folder. Each step saves the files the next
 
 | Step | Command | What it does | Time on the MacBook |
 |---|---|---|---|
-| 1 | `python dataset.py --data-dir ~/isic2020 --preview` | Removes duplicates, splits patients into train, validation and test, checks for leakage, and saves the splits to `splits/` | under a minute |
-| 2 | `python train.py --data-dir ~/isic2020 --model baseline` | Trains the baseline CNN for 10 epochs and saves the best epoch to `outputs/baseline_best.pt` | about 21 minutes |
-| 3 | `python train.py --data-dir ~/isic2020 --model siamese` | Trains the Siamese network for 10 epochs and saves the best epoch to `outputs/siamese_best.pt` | about 23 minutes |
-| 4 | `python train.py --data-dir ~/isic2020 --test` | Tests both saved models. It fits calibration and thresholds on validation, scores the test split once, and saves the results and test figures | a few minutes |
-| 5 | `python predict.py --data-dir ~/isic2020` | Prints predictions for four random test images and saves `figures/example_predictions.png` | seconds |
+| 1 | `python dataset.py --data-dir ~/isic224 --preview` | Loads the metadata, splits patients into train, validation and test, checks for leakage, and saves the splits to `splits/` | under a minute |
+| 2 | `python train.py --data-dir ~/isic224 --model baseline` | Trains the baseline CNN for 10 epochs and saves the best epoch to `outputs/baseline_best.pt` | about 15 minutes |
+| 3 | `python train.py --data-dir ~/isic224 --model siamese` | Trains the Siamese network for 10 epochs and saves the best epoch to `outputs/siamese_best.pt` | about 17 minutes |
+| 4 | `python train.py --data-dir ~/isic224 --test` | Tests both saved models. It fits calibration and thresholds on validation, scores the test split once, and saves the results and test figures | a few minutes |
+| 5 | `python predict.py --data-dir ~/isic224` | Prints predictions for four random test images and saves `figures/example_predictions.png` | seconds |
 
-Step 4 runs the testing code in `evaluate.py`, so `python evaluate.py --data-dir ~/isic2020` gives exactly the same results. Steps 3 and 4 can also be combined as `python train.py --data-dir ~/isic2020 --model siamese --test`, which trains the Siamese network and then tests both models.
+Step 4 runs the testing code in `evaluate.py`, so `python evaluate.py --data-dir ~/isic224` gives exactly the same results. Steps 3 and 4 can also be combined as `python train.py --data-dir ~/isic224 --model siamese --test`, which trains the Siamese network and then tests both models.
 
 Useful options:
 
 - `--limit 512` on `train.py` (including with `--test`) or `evaluate.py` runs on a small random subset to check that everything works. These quick runs save their files with a `quicktest` name, so they never overwrite a full run.
-- `python predict.py --data-dir ~/isic2020 --failures` picks the most informative mistakes on the test split and saves `figures/failure_cases.png`.
-- `python predict.py --data-dir ~/isic2020 --images ISIC_0572205 ISIC_3937539` predicts specific images.
-- `python dataset.py --data-dir ~/isic2020 --check-pairs` checks that the Siamese training pairs are balanced.
+- `python predict.py --data-dir ~/isic224 --failures` picks the most informative mistakes on the test split and saves `figures/failure_cases.png`.
+- `python predict.py --data-dir ~/isic224 --images ISIC_0067816 ISIC_0034937` predicts specific images.
+- `python dataset.py --data-dir ~/isic224 --check-pairs` checks that the Siamese training pairs are balanced.
 
 ### Example output
 
-Running `python predict.py --data-dir ~/isic2020` prints:
+Running `python predict.py --data-dir ~/isic224` prints:
 
 ```
 Image         Truth       Baseline  decision            Siamese  decision           nearest mel nearest ben
-ISIC_0572205  melanoma        3.0%  specialist review     12.2%  urgent review            0.120       0.114
-ISIC_1729223  melanoma        2.4%  specialist review      9.1%  specialist review        0.159       0.134
-ISIC_3937539  benign         35.7%  urgent review         11.0%  urgent review            0.085       0.076
-ISIC_8009079  benign          0.0%  auto-clear             0.2%  auto-clear               0.057       0.030
+ISIC_0067816  melanoma       90.7%  urgent review         72.8%  urgent review            0.146       0.158
+ISIC_0032441  melanoma       75.2%  urgent review         77.2%  urgent review            0.141       0.135
+ISIC_0071241  benign         36.0%  urgent review         34.1%  urgent review            0.133       0.119
+ISIC_0034937  benign          4.7%  auto-clear             5.9%  auto-clear               0.173       0.139
 
 Saved figure to figures/example_predictions.png
 ```
@@ -257,7 +257,7 @@ The percentages are each model's calibrated chance of melanoma. The last two col
 
 | File | Contents |
 |---|---|
-| `dataset.py` | Loading the metadata, removing duplicates, patient-level splitting, image transforms, and the single-image and pair datasets |
+| `dataset.py` | Loading the metadata, patient-level splitting, image transforms, and the single-image and pair datasets |
 | `modules.py` | The ResNet-18 backbone, the baseline classifier, the Siamese network, contrastive loss, and the nearest-neighbour distance calculation |
 | `train.py` | Training and validation loops for both models, saving the best epoch, plotting the training curves, and the `--test` option that tests both saved models |
 | `evaluate.py` | Helper with the testing code used by `train.py --test`: calibration, thresholds, test metrics, confidence intervals, resource profiling and the test figures. It is a separate file because testing needs both trained models at once |
@@ -268,44 +268,63 @@ The percentages are each model's calibrated chance of melanoma. The last two col
 
 - **Fixed splits.** Patients are assigned to splits with a fixed seed (42), and the splits are saved as CSV files in `splits/`. Every later step reads these files, so both models always use exactly the same patients.
 - **Fixed training randomness.** `train.py` fixes the Python and PyTorch random seeds (42), which controls the order of the training images, the augmentations, the Siamese training pairs and the starting weights of the new final layers. The validation pair loss always uses the same 2,000 pairs, and the bootstrap confidence intervals in `evaluate.py` use a fixed seed.
-- **Checked by rerunning.** The baseline was trained twice from scratch on the same MacBook with the same seed, and every epoch gave identical losses and validation scores.
+- **Checked by rerunning.** During development, the baseline was trained twice from scratch on the same MacBook with the same seed, and every epoch gave identical losses and validation scores.
 - **Different hardware.** Apple, NVIDIA and CPU calculations add numbers in slightly different orders, so running on other hardware or other package versions may give slightly different numbers. The exact package versions are pinned in `requirements.txt` to limit this.
 - **Choosing the saved model.** Both models always train for the full 10 epochs. After each epoch the model is scored on the validation split, and it is saved only when the validation AUROC is the best so far. This keeps the best epoch, but it is not early stopping, because training does not end early.
 - **Test split used once.** Calibration, the balanced threshold and the routing thresholds are all chosen on the validation split. The test split is only scored once, by `evaluate.py`.
 
 ## Pre-processing and Data Splits
 
-### Removing duplicates
+### Dataset contents
 
-The ISIC 2020 training set has 33,126 images. The dataset authors report 425 pixel-identical duplicate images [3], and the CSV used here flags 434 rows as duplicates (marked with `tfrecord == -1`). These rows are removed before splitting, leaving 32,692 images. If duplicates were kept, the same image could end up in both training and testing, which would make the test results look better than they really are.
+The dataset combines images from several ISIC collections. The source of each image can be told from its patient ID, and the melanoma rate is very different between sources:
+
+| Source | How it is identified | Images | Melanomas | Melanoma share |
+|---|---|---|---|---|
+| ISIC 2020 [3] | Real patient IDs (`IP_...`) | 11,186 | 581 | 5.2% |
+| HAM10000 [13] | Lesion IDs (`HAM_...`) | 2,513 | 614 | 24.4% |
+| Other earlier ISIC images | No patient ID (placeholder `dummy_...`) | 10,794 | 4,071 | 37.7% |
+| **Total** | | **24,493** | **5,266** | **21.5%** |
+
+The task sheet describes melanoma as less than 2% of screening images, which matches ISIC 2020 alone. This copy has a much higher melanoma share because the earlier ISIC collections contain many more melanomas.
+
+### Duplicate check
+
+Public copies of ISIC 2020 contain duplicate images, so this dataset was checked before use. Every image's decoded pixels were hashed with a one-off script, and no two images were identical. No images were removed, so `dataset.py` does not include a duplicate removal step.
 
 ### Patient-level split
 
-Each patient has a median of 12 images, and images from the same patient often share skin tone, lighting and camera. If one patient's images were spread across splits, the model could learn to recognise the patient rather than the lesion. To prevent this, every patient is assigned to exactly one split, and `dataset.py` checks that no patient appears in more than one.
+Images from the same patient often share skin tone, lighting and camera. If one patient's images were spread across splits, the model could learn to recognise the patient rather than the lesion. To prevent this, every patient ID is assigned to exactly one split, and `dataset.py` checks that no ID appears in more than one.
 
-Melanoma is rare, so a random split could leave one split with very few melanomas. Patients are therefore split in two groups: the 428 patients with at least one melanoma, and the 1,628 patients with none. Each group is shuffled with a fixed seed (42) and divided 70/15/15, so every split gets a similar share of melanoma.
+Patient information is incomplete in this dataset:
 
-| Split | Images | Patients | Melanomas | Melanoma share |
+- **ISIC 2020 images** have real patient IDs, with up to 43 images per patient, so these are fully protected.
+- **HAM10000 images** have one image per lesion ID here.
+- **The other 10,794 images** have no patient ID. Each has a placeholder ID, and 280 placeholders cover two images each. These images are split one at a time, so two photos of the same patient could end up in different splits. This is a limitation of the data, discussed in [Limitations](#limitations).
+
+Patient IDs are split in two groups: the 5,079 IDs with at least one melanoma, and the 9,867 without. Each group is shuffled with a fixed seed (42) and divided 70/15/15, so every split gets a similar share of melanoma.
+
+| Split | Images | Patient IDs | Melanomas | Melanoma share |
 |---|---|---|---|---|
-| Train | 23,232 | 1,440 | 413 | 1.78% |
-| Validation | 4,513 | 308 | 83 | 1.84% |
-| Test | 4,947 | 308 | 85 | 1.72% |
+| Train | 17,049 | 10,462 | 3,662 | 21.5% |
+| Validation | 3,773 | 2,242 | 811 | 21.5% |
+| Test | 3,671 | 2,242 | 793 | 21.6% |
 
 ### Why 70/15/15
 
-- **Training (70%)** gets most of the data, because the model has only 413 melanomas to learn from.
-- **Validation (15%)** is used to choose the best training epoch, fit the calibration, and set the routing thresholds. It needs enough melanomas (83) for these choices to be reliable, and it must be separate from the test split so the test result stays honest.
-- **Test (15%)** is used only once, at the end. With 85 melanomas, one missed melanoma changes the miss rate by about 1.2 percentage points, so a smaller test split would make the results too noisy. Confidence intervals are reported to show this uncertainty.
+- **Training (70%)** gets most of the data, so the models see as many kinds of melanoma as possible.
+- **Validation (15%)** is used to choose the best training epoch, fit the calibration, and set the routing thresholds. Its 811 melanomas make these choices reasonably stable, and it is separate from the test split so the test result stays honest.
+- **Test (15%)** is used only once, at the end. With 793 melanomas, one missed melanoma changes the miss rate by about 0.13 percentage points, so the results are reasonably stable. Confidence intervals are still reported.
 
 ### Image pre-processing
 
-The images are the 256x256 resized version of ISIC 2020 [6], which keeps the lesion detail while making loading much faster than the full-size originals.
+The images are already resized to 224x224 [6], the input size ResNet-18 was pretrained on [9].
 
 | Step | Training images | Validation and test images | Reason |
 |---|---|---|---|
 | Flips | Random horizontal and vertical flips | None | Dermoscopic images have no fixed "up" direction |
 | Rotation | Random rotation of up to 30 degrees | None | Same reason as flips |
-| Crop | Random 224x224 crop | Centre 224x224 crop | 224x224 is the input size ResNet-18 was pretrained on [9], and random crops add variety |
+| Crop | Random square crop covering 80 to 100% of the image, resized back to 224x224 | None, the full image is used | Adds variety in lesion size and position. The images are already 224x224, so a plain 224x224 crop would change nothing |
 | Colour | Small random changes to brightness, contrast and saturation (up to 20%) and hue (up to 2%) | None | Colour varies between clinics and cameras [3] |
 | Normalisation | ImageNet mean and standard deviation | Same | Matches the colour statistics the pretrained encoder expects [11] |
 
@@ -313,14 +332,14 @@ Augmentation is only applied to training images, so validation and test results 
 
 ![Sample training images](figures/sample_training_images.png)
 
-*Sample training images after loading, saved by `python dataset.py --data-dir ~/isic2020 --preview`.*
+*Sample training images after augmentation, saved by `python dataset.py --data-dir ~/isic224 --preview`.*
 
 ### Handling class imbalance
 
-Only 1.78% of training images are melanoma, so a model trained without any correction would learn to predict benign almost every time.
+21.5% of training images are melanoma, so without any correction a model would lean towards predicting benign.
 
-- **Baseline CNN.** The loss gives each melanoma image 55.3 times the weight of a benign image, which is the ratio of benign to melanoma images in the training split. With this weight, the melanoma class carries the same total weight in the loss as the benign class, even though it has about 55 times fewer images.
-- **Siamese network.** Training pairs are drawn with two coin flips. The first image is melanoma or benign with equal chance, and the second image is from the same class or the other class with equal chance. This gives the four pair types (melanoma-melanoma, melanoma-benign, benign-benign and benign-melanoma) in equal numbers, so half of all images the network sees in training are melanomas. New pairs are drawn every epoch, with 11,616 pairs per epoch.
+- **Baseline CNN.** The loss gives each melanoma image 3.66 times the weight of a benign image, which is the ratio of benign to melanoma images in the training split. With this weight, the melanoma class carries the same total weight in the loss as the benign class.
+- **Siamese network.** Training pairs are drawn with two coin flips. The first image is melanoma or benign with equal chance, and the second image is from the same class or the other class with equal chance. This gives the four pair types (melanoma-melanoma, melanoma-benign, benign-benign and benign-melanoma) in equal numbers, so half of all images the network sees in training are melanomas. New pairs are drawn every epoch, with 8,524 pairs per epoch (half the number of training images).
 
 ## Method Details
 
@@ -329,7 +348,7 @@ Only 1.78% of training images are melanoma, so a model trained without any corre
 The ResNet-18 backbone turns an image $x$ into 512 features, and a linear layer turns these into one score $z$. The model is trained with weighted binary cross-entropy, where $y = 1$ for melanoma and $\sigma$ is the sigmoid function:
 
 $$
-\mathcal{L}_{\text{BCE}} = -\Big[\, w \, y \log \sigma(z) + (1 - y) \log\big(1 - \sigma(z)\big) \Big], \qquad w = \frac{N_{\text{benign}}}{N_{\text{melanoma}}} = 55.3
+\mathcal{L}_{\text{BCE}} = -\Big[\, w \, y \log \sigma(z) + (1 - y) \log\big(1 - \sigma(z)\big) \Big], \qquad w = \frac{N_{\text{benign}}}{N_{\text{melanoma}}} = 3.66
 $$
 
 ### Siamese network
@@ -342,7 +361,7 @@ $$
 
 Same-class pairs are pulled together, and different-class pairs are pushed apart until they are at least $m$ apart.
 
-To score a new image, its embedding is compared with the embeddings of all 23,232 training images. $D_{\text{mel}}(x)$ is the average distance to its $k = 10$ nearest training melanomas, and $D_{\text{ben}}(x)$ is the average distance to its 10 nearest benign training images. The score is the gap between them:
+To score a new image, its embedding is compared with the embeddings of all 17,049 training images. $D_{\text{mel}}(x)$ is the average distance to its $k = 10$ nearest training melanomas, and $D_{\text{ben}}(x)$ is the average distance to its 10 nearest benign training images. The score is the gap between them:
 
 $$
 s(x) = D_{\text{ben}}(x) - D_{\text{mel}}(x)
@@ -358,35 +377,35 @@ $$
 \hat{p} = \sigma(a \cdot \text{score} + b)
 $$
 
-$a$ and $b$ are fitted by logistic regression on the validation split only, and then applied unchanged to the test split. The fitted values were $a = 0.576, \, b = -3.500$ for the baseline and $a = 11.28, \, b = -1.892$ for the Siamese network.
+$a$ and $b$ are fitted by logistic regression on the validation split only, and then applied unchanged to the test split. The fitted values were $a = 1.009, \, b = -1.252$ for the baseline and $a = 86.44, \, b = 0.145$ for the Siamese network. The baseline's offset is close to $-\ln(3.66) = -1.30$, so calibration mostly undoes the melanoma loss weight. The Siamese network needs a very large scale because its distance gaps are small numbers.
 
 ### Thresholds
 
 All three thresholds are chosen on the validation split:
 
 - **Balanced threshold** $t_{\text{bal}}$: the probability that maximises melanoma recall plus benign recall (Youden's index on the ROC curve). Used for the classification metrics.
-- **Auto-clear threshold** $t_{\text{clear}}$: the highest probability below which at most 5% of validation melanomas fall. With 83 validation melanomas, this allows 4 to be cleared, so the threshold is the 5th lowest melanoma probability.
-- **Urgent threshold**: a fixed probability of 0.10, or $t_{\text{clear}}$ if that is higher.
+- **Auto-clear threshold** $t_{\text{clear}}$: the highest probability below which at most 5% of validation melanomas fall. With 811 validation melanomas, this allows 40 to be cleared, so the threshold is the 41st lowest melanoma probability.
+- **Urgent threshold**: the balanced threshold $t_{\text{bal}}$, or $t_{\text{clear}}$ if that is higher. Urgent review therefore means the model predicts melanoma, and images between $t_{\text{clear}}$ and $t_{\text{bal}}$ are the uncertain cases sent to specialist review.
 
 ### Settings
 
 | Setting | Value |
 |---|---|
 | Backbone | ResNet-18 with torchvision's ImageNet weights (IMAGENET1K_V1) [9], [11] |
-| Input | 224x224 crop of the 256x256 image |
+| Input | 224x224 images (training images get a random crop of 80 to 100%, resized back to 224x224) |
 | Embedding size | 128, scaled to unit length |
 | Contrastive margin $m$ | 1.0 |
 | Nearest references per class $k$ | 10 |
-| Melanoma loss weight $w$ (baseline) | 55.3 |
+| Melanoma loss weight $w$ (baseline) | 3.66 |
 | Optimiser | AdamW, learning rate 0.0001, weight decay 0.01 (the PyTorch default) |
 | Learning rate schedule | None, the learning rate stays constant |
 | Batch size | 64 images (baseline) or 64 pairs (Siamese network) |
 | Epochs | 10, keeping the epoch with the best validation AUROC |
-| Training pairs per epoch | 11,616 (half the number of training images) |
+| Training pairs per epoch | 8,524 (half the number of training images) |
 | Validation pair loss | The same 2,000 validation pairs every epoch |
 | Platt scaling | Logistic regression on validation, with almost no regularisation ($C = 10^6$) |
 | Auto-clear rule | At most 5% of validation melanomas cleared |
-| Urgent review | Calibrated probability of 0.10 or above |
+| Urgent review | At or above the balanced threshold |
 | Confidence intervals | 1,000 bootstrap resamples of test patients |
 | Random seed | 42 |
 
