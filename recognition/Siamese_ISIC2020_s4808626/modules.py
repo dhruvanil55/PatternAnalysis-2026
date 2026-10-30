@@ -21,7 +21,15 @@ EMBEDDING_DIM = 128
 
 
 def make_backbone(pretrained=True):
-    """ResNet-18 with its final layer removed: image in, 512 features out."""
+    """
+    Build a ResNet-18 [9] with its final classification layer removed.
+
+    Args:
+        pretrained: If True, start from torchvision's ImageNet weights [11].
+
+    Returns:
+        A network that maps a batch of 224x224 images to 512 features each.
+    """
     weights = ResNet18_Weights.DEFAULT if pretrained else None
     model = resnet18(weights=weights)
     model.fc = nn.Identity()
@@ -32,65 +40,147 @@ class BaselineClassifier(nn.Module):
     """
     Standard CNN classifier used as the baseline.
 
-    Outputs one raw score (a logit) per image. Higher means more likely
-    melanoma. A sigmoid turns it into a probability between 0 and 1.
+    A ResNet-18 backbone followed by one linear layer. It outputs one raw score
+    (a logit) per image, where higher means more likely melanoma. A sigmoid
+    turns the score into a probability between 0 and 1.
     """
 
     def __init__(self, pretrained=True):
+        """
+        Create the backbone and the single-output head.
+
+        Args:
+            pretrained: If True, the backbone starts from ImageNet weights.
+        """
         super().__init__()
         self.backbone = make_backbone(pretrained)
         self.head = nn.Linear(BACKBONE_FEATURES, 1)
 
     def forward(self, images):
+        """
+        Score a batch of images.
+
+        Args:
+            images: Tensor of shape (batch, 3, 224, 224).
+
+        Returns:
+            Tensor of shape (batch,) with one logit per image.
+        """
         return self.head(self.backbone(images)).squeeze(1)
 
 class EmbeddingNet(nn.Module):
     """
-    Maps each image to an embedding of length 1.
+    Encoder that maps each image to a 128-number embedding of length 1.
+
+    A ResNet-18 backbone, a linear layer to 128 outputs, and scaling to unit
+    length, so the distance between two embeddings always lies between 0 and 2.
     """
 
     def __init__(self, embedding_dim=EMBEDDING_DIM, pretrained=True):
+        """
+        Create the backbone and the projection to the embedding size.
+
+        Args:
+            embedding_dim: Number of values in each embedding.
+            pretrained: If True, the backbone starts from ImageNet weights.
+        """
         super().__init__()
         self.backbone = make_backbone(pretrained)
         self.projection = nn.Linear(BACKBONE_FEATURES, embedding_dim)
 
     def forward(self, images):
+        """
+        Embed a batch of images.
+
+        Args:
+            images: Tensor of shape (batch, 3, 224, 224).
+
+        Returns:
+            Tensor of shape (batch, embedding_dim), each row scaled to length 1.
+        """
         return F.normalize(self.projection(self.backbone(images)), dim=1)
 
 
 class SiameseNetwork(nn.Module):
     """
+    Siamese network with one shared encoder, the standard design from Koch et al. [7].
+
     Both images in a pair go through the same encoder, so the two branches
-    share every weight. Similar lesions should end up with nearby embeddings.
-    Standard Siamese design from Koch et al. [7].
+    share every weight. Trained with contrastive loss, similar lesions end up
+    with nearby embeddings.
     """
 
     def __init__(self, embedding_dim=EMBEDDING_DIM, pretrained=True):
+        """
+        Create the shared encoder.
+
+        Args:
+            embedding_dim: Number of values in each embedding.
+            pretrained: If True, the encoder's backbone starts from ImageNet weights.
+        """
         super().__init__()
         self.encoder = EmbeddingNet(embedding_dim, pretrained)
 
     def forward(self, images_a, images_b):
+        """
+        Embed both images of each pair with the shared encoder.
+
+        Args:
+            images_a: First images of the pairs, shape (batch, 3, 224, 224).
+            images_b: Second images of the pairs, same shape.
+
+        Returns:
+            A tuple (emb_a, emb_b) of embeddings, each of shape (batch, embedding_dim).
+        """
         return self.encoder(images_a), self.encoder(images_b)
 
     def embed(self, images):
-        """Embed single images, used when comparing to reference images."""
+        """
+        Embed single images, used when comparing them with reference images.
+
+        Args:
+            images: Tensor of shape (batch, 3, 224, 224).
+
+        Returns:
+            Tensor of shape (batch, embedding_dim).
+        """
         return self.encoder(images)
 
 
 class ContrastiveLoss(nn.Module):
     """
     Standard contrastive loss from Hadsell et al. [8].
+
     For each pair with embedding distance d:
     - same class (same_class = 1): loss = d^2, pulling the pair together
     - different class (same_class = 0): loss = max(0, margin - d)^2, pushing
       the pair apart until they are at least `margin` apart
+    The loss is averaged over the batch.
     """
 
     def __init__(self, margin=1.0):
+        """
+        Store the margin.
+
+        Args:
+            margin: Distance that different-class pairs are pushed beyond.
+        """
         super().__init__()
         self.margin = margin
 
     def forward(self, emb_a, emb_b, same_class):
+        """
+        Compute the average contrastive loss over a batch of pairs.
+
+        Args:
+            emb_a: Embeddings of the first images, shape (batch, embedding_dim).
+            emb_b: Embeddings of the second images, same shape.
+            same_class: Tensor of shape (batch,), 1.0 for same-class pairs and
+                0.0 otherwise.
+
+        Returns:
+            A scalar loss tensor.
+        """
         distance = F.pairwise_distance(emb_a, emb_b)
         pull = same_class * distance.pow(2)
         push = (1 - same_class) * F.relu(self.margin - distance).pow(2)
@@ -99,13 +189,20 @@ class ContrastiveLoss(nn.Module):
 
 def class_distances(query_emb, ref_emb, ref_labels, k=10):
     """
-    Average distance from each query embedding to its k nearest melanoma
-    and k nearest benign reference embeddings. Nearest-reference
-    classification follows Tschandl et al. [10].
+    Average distance from each query to its k nearest melanoma and k nearest benign references.
 
-    Each class is searched separately so the far larger benign group cannot
-    outvote melanoma. Returns (melanoma_distance, benign_distance), each with
-    one value per query.
+    Nearest-reference classification follows Tschandl et al. [10]. Each class is
+    searched separately, so the larger benign group cannot outvote melanoma.
+
+    Args:
+        query_emb: Embeddings of the images to classify, shape (queries, dim).
+        ref_emb: Embeddings of the labelled reference images, shape (refs, dim).
+        ref_labels: Labels of the references (1 melanoma, 0 benign), shape (refs,).
+        k: Number of nearest references used per class. Small subsets with
+            fewer references than k use all of them.
+
+    Returns:
+        A tuple (melanoma_distance, benign_distance), each of shape (queries,).
     """
     distances = torch.cdist(query_emb, ref_emb)  # (num_queries, num_refs)
     per_class = []
@@ -119,20 +216,35 @@ def class_distances(query_emb, ref_emb, ref_labels, k=10):
 
 def melanoma_probability(mel_dist, ben_dist, scale=1.0):
     """
-    Turn the two class distances into a melanoma probability.
+    Turn the two class distances into a rough melanoma probability.
 
     An image closer to melanoma references than benign ones gets a probability
-    above 0.5, and one equally close to both gets 0.5, meaning unsure. `scale`
-    controls how fast the probability changes with the gap. It is only used
-    during training, with scale=1.0, to score the validation split after each
-    epoch. The final calibrated probabilities come from Platt scaling in
+    above 0.5, and one equally close to both gets 0.5, meaning unsure. It is only
+    used during training, with scale=1.0, to score the validation split after
+    each epoch. The final calibrated probabilities come from Platt scaling in
     evaluate.py.
+
+    Args:
+        mel_dist: Average distance to the nearest melanoma references.
+        ben_dist: Average distance to the nearest benign references.
+        scale: How fast the probability changes with the distance gap.
+
+    Returns:
+        Tensor of probabilities with the same shape as the inputs.
     """
     return torch.sigmoid(scale * (ben_dist - mel_dist))
 
 
 def count_parameters(model):
-    """Total number of learnable numbers in a model."""
+    """
+    Count the learnable numbers (weights and biases) in a model.
+
+    Args:
+        model: Any PyTorch module.
+
+    Returns:
+        The total number of parameters as an int.
+    """
     return sum(p.numel() for p in model.parameters())
 
 

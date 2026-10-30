@@ -46,7 +46,17 @@ MODEL_COLOURS = {"baseline": SERIES_COLOURS[0], "siamese": SERIES_COLOURS[1]}
 
 
 def parse_args(argv=None):
-    """Read the command-line options, or the list argv when called from train.py."""
+    """
+    Read the evaluation options.
+
+    Args:
+        argv: List of option strings when called from train.py --test, or None
+            to read them from the command line.
+
+    Returns:
+        An argparse Namespace with the data, split and output folders, k, batch
+        size, number of bootstrap resamples, seed and --limit.
+    """
     parser = argparse.ArgumentParser(description="Evaluate both ISIC 2020 models")
     parser.add_argument("--data-dir", required=True, help="Dataset folder containing combined_images/")
     parser.add_argument("--splits-dir", default="splits", help="Folder with the split CSVs")
@@ -69,10 +79,19 @@ def parse_args(argv=None):
 
 def load_split(splits_dir, name, limit, out_dir):
     """
-    Return a split's rows and a CSV path LesionDataset can read.
+    Load one split, or a small fixed subset of it for quick tests.
 
     With --limit, a fixed random subset is written to outputs/ so quick tests
     never touch the real split files.
+
+    Args:
+        splits_dir: Folder with the split CSVs.
+        name: "train", "val" or "test".
+        limit: If set, the number of images to keep.
+        out_dir: Folder for the quick-test subset CSV.
+
+    Returns:
+        A tuple (DataFrame of the split's rows, path to a CSV LesionDataset can read).
     """
     path = Path(splits_dir) / f"{name}.csv"
     df = pd.read_csv(path)
@@ -84,13 +103,35 @@ def load_split(splits_dir, name, limit, out_dir):
 
 
 def make_eval_loader(split_csv, image_dir, batch_size, workers):
-    """Images in file order with no augmentation, so scores line up with the CSV rows."""
+    """
+    Build a DataLoader that keeps images in file order with no augmentation.
+
+    Keeping the order means each score lines up with the matching CSV row.
+
+    Args:
+        split_csv: Path to the split CSV.
+        image_dir: Folder containing the images.
+        batch_size: Images per batch.
+        workers: Number of image loading processes.
+
+    Returns:
+        A torch DataLoader that yields (images, labels, names) batches.
+    """
     dataset = LesionDataset(split_csv, image_dir, get_transforms(train=False))
     return DataLoader(dataset, batch_size=batch_size, shuffle=False, **loader_settings(workers))
 
 
 def load_models(out_dir, device):
-    """Load the best saved weights of both models."""
+    """
+    Load the best saved weights of both models, ready for prediction.
+
+    Args:
+        out_dir: Folder containing baseline_best.pt and siamese_best.pt.
+        device: Device to move the models to.
+
+    Returns:
+        A tuple (baseline, siamese), both in evaluation mode.
+    """
     baseline = BaselineClassifier(pretrained=False)
     baseline.load_state_dict(torch.load(Path(out_dir) / "baseline_best.pt", map_location="cpu"))
     siamese = SiameseNetwork(pretrained=False)
@@ -104,23 +145,53 @@ def load_models(out_dir, device):
 
 @torch.no_grad()
 def baseline_scores(model, loader, device):
-    """The baseline's raw output (logit) for every image."""
+    """
+    Get the baseline's raw score (logit) for every image.
+
+    Args:
+        model: The trained BaselineClassifier.
+        loader: DataLoader from make_eval_loader.
+        device: Device to run on.
+
+    Returns:
+        NumPy array with one logit per image, in file order.
+    """
     return torch.cat([model(images.to(device)).cpu() for images, _, _ in loader]).numpy()
 
 
 @torch.no_grad()
 def embed_images(model, loader, device):
-    """Siamese embeddings for every image, kept on the device."""
+    """
+    Get the Siamese embedding of every image.
+
+    Args:
+        model: The trained SiameseNetwork.
+        loader: DataLoader from make_eval_loader.
+        device: Device to run on.
+
+    Returns:
+        Tensor of embeddings in file order, kept on the device.
+    """
     return torch.cat([model.embed(images.to(device)) for images, _, _ in loader])
 
 
 @torch.no_grad()
 def siamese_scores(query_emb, ref_emb, ref_labels, k, chunk=512):
     """
-    Distance gap (benign distance minus melanoma distance) for every query.
+    Compute the Siamese score: benign distance minus melanoma distance.
 
-    Positive means the image sits closer to melanoma references. Queries are
-    processed in chunks to keep memory use low.
+    A positive score means the image sits closer to the melanoma references.
+    Queries are processed in chunks to keep memory use low.
+
+    Args:
+        query_emb: Embeddings of the images to score.
+        ref_emb: Embeddings of the training (reference) images.
+        ref_labels: Labels of the reference images.
+        k: Number of nearest references used per class.
+        chunk: Number of queries processed at a time.
+
+    Returns:
+        NumPy array with one score per query.
     """
     gaps = []
     for start in range(0, len(query_emb), chunk):
@@ -129,15 +200,32 @@ def siamese_scores(query_emb, ref_emb, ref_labels, k, chunk=512):
     return torch.cat(gaps).numpy()
 
 def sigmoid(x):
+    """
+    Squash any number into a probability between 0 and 1.
+
+    Args:
+        x: NumPy array or number.
+
+    Returns:
+        1 / (1 + exp(-x)), with the same shape as x.
+    """
     return 1.0 / (1.0 + np.exp(-x))
 
 
 def fit_calibration(scores, labels):
     """
-    Platt scaling: fit probability = sigmoid(a * score + b) on validation [4].
+    Fit Platt scaling: probability = sigmoid(a * score + b), on the validation split [4].
 
-    The same method is used for both models, so their calibrated
-    probabilities are directly comparable.
+    The same method is used for both models, so their probabilities can be
+    compared fairly. It is a logistic regression with one input and almost no
+    regularisation.
+
+    Args:
+        scores: Raw validation scores (baseline logits or Siamese distance gaps).
+        labels: Validation labels, 0 or 1.
+
+    Returns:
+        A tuple (a, b) of floats.
     """
     fit = LogisticRegression(C=1e6, max_iter=1000)  # very weak regularisation
     fit.fit(scores.reshape(-1, 1), labels)
@@ -145,15 +233,37 @@ def fit_calibration(scores, labels):
 
 
 def balanced_threshold(probs, labels):
-    """Threshold that maximises balanced accuracy (sensitivity + specificity)."""
+    """
+    Find the probability threshold that best balances melanoma and benign recall.
+
+    This maximises melanoma recall plus benign recall (Youden's index on the
+    ROC curve), which is the same as maximising balanced accuracy.
+
+    Args:
+        probs: Calibrated validation probabilities.
+        labels: Validation labels, 0 or 1.
+
+    Returns:
+        The threshold as a float.
+    """
     fpr, tpr, thresholds = roc_curve(labels, probs)
     return float(thresholds[np.argmax(tpr - fpr)])
 
 
 def clear_threshold(probs, labels, max_missed=MAX_MISSED_MELANOMA):
     """
-    Highest threshold t such that automatically clearing every image with
-    probability below t misses at most `max_missed` of the melanomas (AC4).
+    Find the auto-clear threshold for AC4.
+
+    This is the highest threshold t such that clearing every image with a
+    probability below t misses at most `max_missed` of the melanomas.
+
+    Args:
+        probs: Calibrated validation probabilities.
+        labels: Validation labels, 0 or 1.
+        max_missed: Largest allowed share of melanomas below the threshold.
+
+    Returns:
+        The threshold as a float, or 1.0 if the limit allows every melanoma.
     """
     melanoma_probs = np.sort(probs[labels == 1])
     allowed = int(np.floor(max_missed * len(melanoma_probs)))  # melanomas we may clear
@@ -162,13 +272,20 @@ def clear_threshold(probs, labels, max_missed=MAX_MISSED_MELANOMA):
 
 def route(probs, t_clear, t_urgent):
     """
-    Three-tier decision for each image, based on selective classification [5]:
-    auto-clear (below t_clear), urgent review (at or above t_urgent),
-    otherwise routine specialist review.
+    Sort each image into one of three groups, based on selective classification [5].
 
-    t_urgent is the model's balanced threshold, so urgent review means the
-    model predicts melanoma. Images between t_clear and t_urgent are the
-    uncertain cases that go to routine specialist review.
+    auto-clear (below t_clear), urgent review (at or above t_urgent), otherwise
+    routine specialist review. t_urgent is the model's balanced threshold, so
+    urgent review means the model predicts melanoma. Images between t_clear and
+    t_urgent are the uncertain cases that go to specialist review.
+
+    Args:
+        probs: Calibrated melanoma probabilities.
+        t_clear: Auto-clear threshold.
+        t_urgent: Urgent review threshold.
+
+    Returns:
+        NumPy array of decision strings, one per image.
     """
     decisions = np.full(len(probs), "specialist review", dtype=object)
     decisions[probs < t_clear] = "auto-clear"
@@ -176,7 +293,20 @@ def route(probs, t_clear, t_urgent):
     return decisions
 
 def expected_calibration_error(probs, labels, n_bins=10):
-    """Average gap between predicted probability and observed melanoma rate, over 10 bins [4]."""
+    """
+    Expected calibration error (ECE) over equal-width probability bins [4].
+
+    The average gap between the predicted probability and the observed melanoma
+    rate in each bin, weighted by the number of images in the bin.
+
+    Args:
+        probs: Predicted probabilities.
+        labels: True labels, 0 or 1.
+        n_bins: Number of bins between 0 and 1.
+
+    Returns:
+        The ECE as a float, where 0 means perfectly calibrated.
+    """
     bins = np.clip(np.digitize(probs, np.linspace(0, 1, n_bins + 1)[1:-1]), 0, n_bins - 1)
     ece = 0.0
     for b in range(n_bins):
@@ -187,7 +317,20 @@ def expected_calibration_error(probs, labels, n_bins=10):
 
 
 def routing_summary(probs, labels, t_clear, t_urgent):
-    """Share of images in each tier and how many melanomas were automatically cleared."""
+    """
+    Summarise how a set of images is routed.
+
+    Args:
+        probs: Calibrated melanoma probabilities.
+        labels: True labels, 0 or 1.
+        t_clear: Auto-clear threshold.
+        t_urgent: Urgent review threshold.
+
+    Returns:
+        A dict with the share of images in each group, the number and share of
+        melanomas that were auto-cleared, and the share of urgent cases that
+        were melanoma.
+    """
     decisions = route(probs, t_clear, t_urgent)
     n_mel = int(labels.sum())
     missed = int(((decisions == "auto-clear") & (labels == 1)).sum())
@@ -203,7 +346,28 @@ def routing_summary(probs, labels, t_clear, t_urgent):
 
 
 def test_metrics(raw_probs, probs, scores, labels, t_balanced, t_clear, t_urgent, calibration):
-    """Every test metric for one model. probs are calibrated, raw_probs are not."""
+    """
+    Compute every test metric for one model.
+
+    Classification metrics use the balanced threshold. Confidence is how far
+    each calibrated score is from that threshold in log-odds, and its AUROC
+    measures how well it separates correct predictions from incorrect ones.
+
+    Args:
+        raw_probs: Probabilities before calibration.
+        probs: Calibrated probabilities.
+        scores: Raw scores the calibration was applied to.
+        labels: True labels, 0 or 1.
+        t_balanced: Balanced threshold from validation.
+        t_clear: Auto-clear threshold from validation.
+        t_urgent: Urgent review threshold from validation.
+        calibration: The (a, b) Platt scaling values.
+
+    Returns:
+        A dict with AUROC, PR-AUC, accuracy measures, per-class precision and
+        recall, macro-F1, the confusion matrix, ECE before and after
+        calibration, confidence AUROC for correctness, and the routing summary.
+    """
     preds = (probs >= t_balanced).astype(int)
     correct = (preds == labels).astype(int)
     # Confidence = distance from the decision threshold in log-odds.
@@ -233,9 +397,20 @@ def bootstrap_intervals(test_df, probs, thresholds, n_resamples, seed=0):
     """
     95% confidence intervals by resampling test patients with replacement.
 
-    Patients rather than images are resampled because images from one patient
-    are not independent. Also gives the interval for the AUROC difference
-    between the two models, to judge whether it is real or noise.
+    Patients rather than images are resampled, because images from one patient
+    are not independent. The thresholds stay fixed. The interval for the AUROC
+    difference between the two models shows whether that difference is real or
+    could be noise.
+
+    Args:
+        test_df: Test split rows, with patient_id and target columns.
+        probs: Dict of calibrated test probabilities for "baseline" and "siamese".
+        thresholds: Dict of each model's balanced and auto-clear thresholds.
+        n_resamples: Number of bootstrap resamples.
+        seed: Seed for the resampling.
+
+    Returns:
+        A dict mapping each measure name to [lower, upper] bounds.
     """
     labels = test_df["target"].to_numpy().astype(int)
     patients = list(test_df.groupby("patient_id").indices.values())
@@ -266,16 +441,30 @@ def bootstrap_intervals(test_df, probs, thresholds, n_resamples, seed=0):
             for name, v in samples.items()}
 
 def synchronise(device):
-    """Wait for the GPU to finish, so timings are accurate."""
+    """
+    Wait for the GPU to finish its queued work, so timings are accurate.
+
+    Args:
+        device: The device in use. Does nothing on the CPU.
+    """
     if device.type == "mps":
         torch.mps.synchronize()
 
 def peak_training_memory_gb(kind, device, batch_size, steps=5):
     """
-    Peak GPU memory over a few training steps on random images.
+    Measure peak GPU memory over a few training steps on random images.
 
     Uses the same batch size as real training. Only measured on the Apple GPU,
     where it is the memory the Metal driver holds for this process.
+
+    Args:
+        kind: "baseline" or "siamese".
+        device: Device to measure on.
+        batch_size: Images (or pairs) per training step.
+        steps: Number of training steps to run.
+
+    Returns:
+        Peak memory in GB, or None when not running on the Apple GPU.
     """
     if device.type != "mps":
         return None
@@ -304,7 +493,17 @@ def peak_training_memory_gb(kind, device, batch_size, steps=5):
 
 @torch.no_grad()
 def milliseconds_per_image(predict_one, images, warmup=10):
-    """Average time to predict one image, after a few warm-up runs."""
+    """
+    Measure the average time to predict one image, after a few warm-up runs.
+
+    Args:
+        predict_one: Function that predicts a single image.
+        images: List of single-image tensors already on the device.
+        warmup: Number of images used only to warm up.
+
+    Returns:
+        The average time per image in milliseconds.
+    """
     for image in images[:warmup]:
         predict_one(image)
     start = time.perf_counter()
@@ -313,6 +512,18 @@ def milliseconds_per_image(predict_one, images, warmup=10):
     return (time.perf_counter() - start) / len(images[warmup:]) * 1000
 
 def style_axes(ax, xlabel, ylabel, title):
+    """
+    Apply the shared figure style to one set of axes.
+
+    Sets the title, axis labels, light grid and legend, and hides the top and
+    right borders.
+
+    Args:
+        ax: Matplotlib axes.
+        xlabel: X-axis label.
+        ylabel: Y-axis label.
+        title: Panel title.
+    """
     ax.set_title(title, color=INK, loc="left")
     ax.set_xlabel(xlabel, color=MUTED)
     ax.set_ylabel(ylabel, color=MUTED)
@@ -324,7 +535,15 @@ def style_axes(ax, xlabel, ylabel, title):
     ax.legend(frameon=False, fontsize=9, labelcolor=INK)
 
 def plot_roc_pr(labels, probs, results, out_path):
-    """ROC and precision-recall curves for both models on the test split."""
+    """
+    Plot ROC and precision-recall curves for both models on the test split.
+
+    Args:
+        labels: Test labels, 0 or 1.
+        probs: Dict of calibrated test probabilities for each model.
+        results: Results dict, used for the AUROC and PR-AUC in the legend.
+        out_path: Where to save the PNG figure.
+    """
     fig, (ax_roc, ax_pr) = plt.subplots(1, 2, figsize=(11, 4.5))
     for model in ("baseline", "siamese"):
         name, colour, r = MODEL_NAMES[model], MODEL_COLOURS[model], results[model]["test"]
@@ -347,17 +566,34 @@ def plot_roc_pr(labels, probs, results, out_path):
     plt.close(fig)
 
 def reliability_points(probs, labels, n_bins=10):
-    """Mean predicted probability and observed melanoma rate in equal-count bins."""
+    """
+    Points for a reliability diagram, using bins with equal numbers of images.
+
+    Args:
+        probs: Predicted probabilities.
+        labels: True labels, 0 or 1.
+        n_bins: Number of bins.
+
+    Returns:
+        A tuple (mean predicted probability per bin, observed melanoma rate per bin).
+    """
     order = np.argsort(probs)
     groups = np.array_split(order, n_bins)
     return ([probs[g].mean() for g in groups], [labels[g].mean() for g in groups])
 
 def plot_reliability(labels, raw_probs, probs, results, out_path):
     """
-    Reliability diagrams before and after calibration, one panel per model.
+    Plot reliability diagrams before and after calibration, one panel per model.
 
-    Bins hold equal numbers of images, because most probabilities sit near 0.
-    Both axes are logarithmic so the low range is readable.
+    Bins hold equal numbers of images, because most images have low
+    probabilities and equal-width bins would leave the upper bins nearly empty.
+
+    Args:
+        labels: Test labels, 0 or 1.
+        raw_probs: Dict of uncalibrated test probabilities for each model.
+        probs: Dict of calibrated test probabilities for each model.
+        results: Results dict, used for the ECE values in the legend.
+        out_path: Where to save the PNG figure.
     """
     fig, axes = plt.subplots(1, 2, figsize=(11, 4.8))
     for ax, model in zip(axes, ("baseline", "siamese")):
@@ -386,7 +622,19 @@ def plot_reliability(labels, raw_probs, probs, results, out_path):
 
 
 def automation_curve(probs, labels):
-    """Share automatically cleared against share of melanomas missed, for every threshold."""
+    """
+    Share of images auto-cleared against share of melanomas missed, for every threshold.
+
+    Images are sorted from lowest to highest probability and cleared one at a
+    time, which gives the risk-coverage curve.
+
+    Args:
+        probs: Calibrated melanoma probabilities.
+        labels: True labels, 0 or 1.
+
+    Returns:
+        A tuple (share cleared, share of melanomas missed), both starting at 0.
+    """
     sorted_labels = labels[np.argsort(probs)]
     cleared = np.arange(1, len(labels) + 1) / len(labels)
     missed = np.cumsum(sorted_labels) / labels.sum()
@@ -394,7 +642,15 @@ def automation_curve(probs, labels):
 
 
 def plot_automation(labels, probs, results, out_path):
-    """How many cases each model can clear on its own for a given melanoma miss rate."""
+    """
+    Plot the risk-coverage curve for both models, with the AC4 limit and each model's operating point.
+
+    Args:
+        labels: Test labels, 0 or 1.
+        probs: Dict of calibrated test probabilities for each model.
+        results: Results dict, used for each model's routing at its validation threshold.
+        out_path: Where to save the PNG figure.
+    """
     fig, ax = plt.subplots(figsize=(7.5, 4.8))
     for model in ("baseline", "siamese"):
         cleared, missed = automation_curve(probs[model], labels)
@@ -417,7 +673,15 @@ def plot_automation(labels, probs, results, out_path):
     plt.close(fig)
 
 def to_builtin(value):
-    """Convert NumPy numbers so results can be written as JSON."""
+    """
+    Convert NumPy numbers inside nested dicts and lists so results can be saved as JSON.
+
+    Args:
+        value: A dict, list, NumPy number or plain value.
+
+    Returns:
+        The same structure with plain Python numbers.
+    """
     if isinstance(value, dict):
         return {k: to_builtin(v) for k, v in value.items()}
     if isinstance(value, (list, tuple)):
@@ -428,6 +692,17 @@ def to_builtin(value):
 
 
 def main(args=None):
+    """
+    Run the full evaluation of both models.
+
+    Fits calibration and thresholds on the validation split, scores the test
+    split once, computes confidence intervals and resource measurements, and
+    saves evaluation_results.json, test_predictions.csv, the Siamese reference
+    bank and the three test figures.
+
+    Args:
+        args: Options from parse_args, or None to read them from the command line.
+    """
     if args is None:
         args = parse_args()
     set_seed(args.seed)
@@ -533,7 +808,12 @@ def main(args=None):
 
 
 def print_summary(results):
-    """Print the headline comparison."""
+    """
+    Print the headline comparison table and the AUROC difference interval.
+
+    Args:
+        results: The results dict built by main.
+    """
     ci = results["confidence_intervals_95"]
     rows = [
         ("AUROC", "auroc", "{:.3f}"), ("PR-AUC", "pr_auc", "{:.3f}"),

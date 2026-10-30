@@ -32,6 +32,13 @@ N_SHOWN = 3  # nearest reference images shown per class
 
 
 def parse_args():
+    """
+    Read the command-line options for example predictions.
+
+    Returns:
+        An argparse Namespace with the data folder, specific --images, --n random
+        images, --failures, --quicktest and the seed.
+    """
     parser = argparse.ArgumentParser(description="Show example predictions")
     parser.add_argument("--data-dir", required=True, help="Dataset folder containing combined_images/")
     parser.add_argument("--splits-dir", default="splits", help="Folder with the split CSVs")
@@ -48,7 +55,17 @@ def parse_args():
 
 
 def pick_random(test_predictions, n, seed):
-    """Half melanoma and half benign test images, chosen at random."""
+    """
+    Choose random test images, half melanoma and half benign.
+
+    Args:
+        test_predictions: Test predictions saved by evaluate.py.
+        n: Total number of images to choose.
+        seed: Seed for the random choice.
+
+    Returns:
+        A tuple (image names, reasons), where every reason is an empty string.
+    """
     melanoma = test_predictions[test_predictions["target"] == 1]
     benign = test_predictions[test_predictions["target"] == 0]
     chosen = pd.concat([melanoma.sample(n=min(n // 2, len(melanoma)), random_state=seed),
@@ -58,8 +75,18 @@ def pick_random(test_predictions, n, seed):
 
 def pick_failures(test_predictions):
     """
-    Up to five informative mistakes for failure analysis: confident misses,
-    confident false alarms and the biggest disagreement between the models.
+    Choose up to five informative mistakes for the failure analysis.
+
+    These are the most confident misses and false alarms of each model, and the
+    melanoma where the two models disagreed most. An image that would fill two
+    slots is only shown once.
+
+    Args:
+        test_predictions: Test predictions saved by evaluate.py.
+
+    Returns:
+        A tuple (image names, reasons), where each reason describes why the
+        image was chosen.
     """
     melanoma = test_predictions[test_predictions["target"] == 1]
     benign = test_predictions[test_predictions["target"] == 0]
@@ -81,7 +108,19 @@ def pick_failures(test_predictions):
 
 
 def true_labels(names, splits_dir):
-    """Look up each image's label in whichever split it belongs to."""
+    """
+    Look up each image's true label in whichever split it belongs to.
+
+    Args:
+        names: Image names, for example "ISIC_0067816".
+        splits_dir: Folder with the split CSVs.
+
+    Returns:
+        List of labels, 1 for melanoma and 0 otherwise.
+
+    Raises:
+        SystemExit: If an image is not in any split.
+    """
     all_rows = pd.concat([pd.read_csv(Path(splits_dir) / f"{s}.csv") for s in ("train", "val", "test")])
     lookup = all_rows.set_index("image_name")["target"]
     missing = [n for n in names if n not in lookup.index]
@@ -93,8 +132,24 @@ def true_labels(names, splits_dir):
 @torch.no_grad()
 def predict(names, image_dir, baseline, siamese, bank, results, device):
     """
-    Calibrated melanoma probability from both models, plus each image's
-    nearest melanoma and benign reference images (name and distance).
+    Predict images with both models and find each image's nearest training images.
+
+    Probabilities are calibrated with the same Platt scaling values fitted by
+    evaluate.py, so they match the test results exactly.
+
+    Args:
+        names: Image names to predict.
+        image_dir: Folder containing the images.
+        baseline: The trained BaselineClassifier.
+        siamese: The trained SiameseNetwork.
+        bank: Saved reference bank with training embeddings, labels, names and k.
+        results: Saved evaluation results, for the calibration values.
+        device: Device to run on.
+
+    Returns:
+        A tuple (baseline probabilities, Siamese probabilities, neighbours),
+        where neighbours holds, for each image, the names and distances of its
+        nearest melanoma and benign training images.
     """
     preprocess = get_transforms(train=False)
     images = torch.stack([preprocess(Image.open(image_dir / f"{n}.jpg").convert("RGB"))
@@ -124,12 +179,36 @@ def predict(names, image_dir, baseline, siamese, bank, results, device):
 
 
 def decisions(probs, model_results):
-    """Routing decision for each probability, using the thresholds chosen on validation."""
+    """
+    Route each probability using the thresholds chosen on validation.
+
+    Args:
+        probs: Calibrated melanoma probabilities for one model.
+        model_results: That model's saved results, containing its thresholds.
+
+    Returns:
+        NumPy array of decision strings, one per image.
+    """
     t = model_results["thresholds"]
     return route(np.asarray(probs), t["clear"], t["urgent"])
 
 
 def print_predictions(names, labels, reasons, probs, decided, neighbours):
+    """
+    Print a table of predictions, one row per image.
+
+    Shows the true label, each model's calibrated probability and routing
+    decision, and the distance to the nearest melanoma and benign training
+    image. The reason an image was chosen is printed under it when there is one.
+
+    Args:
+        names: Image names.
+        labels: True labels.
+        reasons: Why each image was chosen, or empty strings.
+        probs: Dict of probabilities for "baseline" and "siamese".
+        decided: Dict of routing decisions for each model.
+        neighbours: Nearest training images from predict.
+    """
     print(f"\n{'Image':14}{'Truth':10}{'Baseline':>10}  {'decision':18}{'Siamese':>9}  "
           f"{'decision':18}{'nearest mel':>12}{'nearest ben':>12}")
     for i, name in enumerate(names):
@@ -143,8 +222,20 @@ def print_predictions(names, labels, reasons, probs, decided, neighbours):
 
 def plot_predictions(names, labels, reasons, probs, decided, neighbours, image_dir, out_path):
     """
-    One row per image: the image, then its nearest melanoma and nearest benign
-    training images with their embedding distances (smaller = more similar).
+    Save a figure with one row per image and its nearest training images.
+
+    Each row shows the image, then its nearest melanoma and nearest benign
+    training images with their embedding distances (smaller means more similar).
+
+    Args:
+        names: Image names.
+        labels: True labels.
+        reasons: Why each image was chosen, or empty strings.
+        probs: Dict of probabilities for "baseline" and "siamese".
+        decided: Dict of routing decisions for each model.
+        neighbours: Nearest training images from predict.
+        image_dir: Folder containing the images.
+        out_path: Where to save the PNG figure.
     """
     crop = transforms.CenterCrop(IMAGE_SIZE)
     n_cols = 1 + 2 * N_SHOWN
@@ -152,6 +243,13 @@ def plot_predictions(names, labels, reasons, probs, decided, neighbours, image_d
                              squeeze=False)
 
     def show(ax, name):
+        """
+        Draw one image, centre-cropped to 224x224, on the given axes.
+
+        Args:
+            ax: Matplotlib axes.
+            name: Image name.
+        """
         ax.imshow(crop(Image.open(image_dir / f"{name}.jpg").convert("RGB")))
 
     for row, name in enumerate(names):
@@ -184,6 +282,12 @@ def plot_predictions(names, labels, reasons, probs, decided, neighbours, image_d
 
 
 def main():
+    """
+    Choose images, predict them with both models, print the results and save a figure.
+
+    Uses the files saved by evaluate.py, so it must be run after the models are
+    trained and tested.
+    """
     args = parse_args()
     device = get_device()
     out_dir = Path(args.out_dir)

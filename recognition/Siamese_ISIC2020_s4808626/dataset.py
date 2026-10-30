@@ -32,10 +32,18 @@ IMAGE_FOLDER = "combined_images"
 
 def load_metadata(data_dir):
     """
-    Read cleaned_metadata.csv and give it the column names used everywhere else.
+    Read the dataset's metadata and give it the column names used everywhere else.
 
     This copy of the dataset is already cleaned, so no rows are removed. Images
-    without a real patient ID have a "dummy_" ID, so each is split on its own.
+    without a real patient ID have a "dummy_" placeholder ID, so each of them is
+    split on its own.
+
+    Args:
+        data_dir: Folder containing cleaned_metadata.csv and combined_images/.
+
+    Returns:
+        A DataFrame with one row per image and the columns image_name,
+        patient_id and target (1 for melanoma, 0 otherwise).
     """
     df = pd.read_csv(Path(data_dir) / METADATA_FILE)
     df = df.rename(columns={"isic_id": "image_name"})
@@ -49,10 +57,19 @@ def load_metadata(data_dir):
 
 def split_patients(df, seed=42):
     """
-    Assign every patient to exactly one split (train, val or test).
+    Assign every patient ID to exactly one split (train, val or test).
 
-    Patients with at least one melanoma and patients with none are split
-    separately, so each split gets a similar share of the rare class.
+    Patient IDs with at least one melanoma and those with none are shuffled and
+    split 70/15/15 separately, so each split gets a similar share of melanoma.
+    Keeping all of a patient's images in one split stops the model being tested
+    on people it has already seen.
+
+    Args:
+        df: Metadata from load_metadata.
+        seed: Random seed for the shuffle, so the split can be repeated.
+
+    Returns:
+        A copy of df with an extra "split" column.
     """
     # One row per patient: 1 if any of their images is melanoma, else 0.
     patients = df.groupby("patient_id")["target"].max().reset_index()
@@ -79,7 +96,15 @@ def split_patients(df, seed=42):
 
 
 def check_no_leakage(df):
-    """Stop with an error if any patient appears in more than one split."""
+    """
+    Stop with an error if any patient ID appears in more than one split.
+
+    Args:
+        df: Metadata with a "split" column, from split_patients.
+
+    Raises:
+        AssertionError: If two splits share a patient ID.
+    """
     patients = {name: set(group["patient_id"]) for name, group in df.groupby("split")}
     assert not patients["train"] & patients["val"], "Patient in both train and val"
     assert not patients["train"] & patients["test"], "Patient in both train and test"
@@ -88,7 +113,12 @@ def check_no_leakage(df):
 
 
 def summarise(df):
-    """Print image, patient and melanoma counts for each split."""
+    """
+    Print the number of images, patient IDs and melanomas in each split.
+
+    Args:
+        df: Metadata with a "split" column, from split_patients.
+    """
     for name in ["train", "val", "test"]:
         part = df[df["split"] == name]
         n_mel = int(part["target"].sum())
@@ -99,7 +129,13 @@ def summarise(df):
 
 
 def save_splits(df, out_dir):
-    """Save one CSV per split so every run uses exactly the same patients."""
+    """
+    Save one CSV per split, so every later run uses exactly the same patients.
+
+    Args:
+        df: Metadata with a "split" column, from split_patients.
+        out_dir: Folder to write train.csv, val.csv and test.csv into.
+    """
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     columns = ["image_name", "patient_id", "target"]
@@ -109,14 +145,20 @@ def save_splits(df, out_dir):
 
 def get_transforms(train):
     """
-    Image preparation steps.
+    Build the image preparation steps for training or evaluation.
 
     Training images get random flips, rotations, zoomed crops and colour
-    changes so the model sees varied versions of each lesion. Lesion photos have
-    no fixed "up" direction, and colour varies between clinics and cameras.
+    changes, so the model sees varied versions of each lesion. Lesion photos
+    have no fixed "up" direction, and colour varies between clinics and cameras.
     The images are already 224x224, so the crop covers 80 to 100% of the image
-    and is resized back to 224x224.
-    Validation and test images are used as they are, so results are repeatable.
+    and is resized back to 224x224. Validation and test images are only
+    normalised, so their results are the same every run.
+
+    Args:
+        train: True for the training augmentations, False for evaluation.
+
+    Returns:
+        A torchvision Compose that turns a PIL image into a normalised tensor.
     """
     if train:
         return transforms.Compose([
@@ -139,19 +181,38 @@ class LesionDataset(Dataset):
     """
     Single lesion images with their labels, read from one split CSV.
 
-    Returns (image tensor, label, image name). The label is 1.0 for melanoma
-    and 0.0 for benign. The image name is kept for later error analysis.
+    Each item is (image tensor, label, image name). The label is 1.0 for
+    melanoma and 0.0 otherwise. The image name is kept for error analysis.
     """
 
     def __init__(self, split_csv, image_dir, transform=None):
+        """
+        Read the split CSV and remember where the images are.
+
+        Args:
+            split_csv: Path to a split CSV with image_name and target columns.
+            image_dir: Folder containing the .jpg images.
+            transform: Image preparation steps from get_transforms, or None to
+                return PIL images.
+        """
         self.df = pd.read_csv(split_csv)
         self.image_dir = Path(image_dir)
         self.transform = transform
 
     def __len__(self):
+        """Number of images in the split."""
         return len(self.df)
 
     def __getitem__(self, idx):
+        """
+        Load one image and its label.
+
+        Args:
+            idx: Row number in the split CSV.
+
+        Returns:
+            A tuple (image, label, image_name).
+        """
         row = self.df.iloc[idx]
         image = Image.open(self.image_dir / f"{row['image_name']}.jpg").convert("RGB")
         if self.transform is not None:
@@ -161,7 +222,19 @@ class LesionDataset(Dataset):
 
 
 def save_preview(data_dir, splits_dir, out_path, n_per_class=8, seed=0):
-    """Save a grid of augmented training images, half melanoma and half benign."""
+    """
+    Save a grid of augmented training images, half melanoma and half benign.
+
+    Also loads one batch to check that the images and labels have the expected
+    shapes.
+
+    Args:
+        data_dir: Dataset folder containing combined_images/.
+        splits_dir: Folder with the split CSVs.
+        out_path: Where to save the PNG figure.
+        n_per_class: Number of images of each class to show.
+        seed: Random seed for choosing the images.
+    """
     dataset = LesionDataset(
         Path(splits_dir) / "train.csv", Path(data_dir) / IMAGE_FOLDER, get_transforms(train=True)
     )
@@ -201,14 +274,25 @@ class PairDataset(Dataset):
     Each pair is chosen with two coin flips:
     1. The first image is melanoma or benign with equal chance.
     2. The second image is the same class or the other class with equal chance.
-    All four pair types are equally common, so melanoma appears in 75% of
-    pairs even though it is under 2% of images.
+    All four pair types are equally common, so melanoma appears in 75% of pairs
+    even though it is about 21.5% of images. A new random pair is drawn every
+    time an item is requested, so each epoch sees new combinations.
 
-    Returns (image_a, image_b, same_class, label_a, label_b), where same_class
-    is 1.0 if both images have the same label and 0.0 otherwise.
+    Each item is (image_a, image_b, same_class, label_a, label_b), where
+    same_class is 1.0 if both images have the same label and 0.0 otherwise.
     """
 
     def __init__(self, split_csv, image_dir, transform, pairs_per_epoch=None):
+        """
+        Read the split and group its images by class.
+
+        Args:
+            split_csv: Path to the training split CSV.
+            image_dir: Folder containing the .jpg images.
+            transform: Image preparation steps applied to both images in a pair.
+            pairs_per_epoch: Pairs per epoch. Defaults to half the number of
+                images, so an epoch processes as many images as a baseline epoch.
+        """
         self.images = LesionDataset(split_csv, image_dir, transform)
         df = self.images.df
         self.by_class = {
@@ -220,10 +304,17 @@ class PairDataset(Dataset):
         self.pairs_per_epoch = pairs_per_epoch or len(df) // 2
 
     def __len__(self):
+        """Number of pairs in one epoch."""
         return self.pairs_per_epoch
 
     def sample_pair_indices(self):
-        """Pick two row indices and whether they share a class."""
+        """
+        Pick two different images using the two 50/50 coin flips.
+
+        Returns:
+            A tuple (idx_a, idx_b, same), where idx_a and idx_b are row numbers in
+            the split and same is True if both images have the same class.
+        """
         class_a = random.choice([0, 1])
         same = random.random() < 0.5
         class_b = class_a if same else 1 - class_a
@@ -238,6 +329,15 @@ class PairDataset(Dataset):
     def __getitem__(self, idx):
         # idx is ignored: a fresh random pair is drawn every time, so each
         # epoch sees new combinations of the same images.
+        """
+        Draw a fresh random pair. The index is ignored.
+
+        Args:
+            idx: Unused. A new pair is sampled on every call.
+
+        Returns:
+            A tuple (image_a, image_b, same_class, label_a, label_b).
+        """
         idx_a, idx_b, same = self.sample_pair_indices()
         image_a, label_a, _ = self.images[idx_a]
         image_b, label_b, _ = self.images[idx_b]
@@ -246,7 +346,18 @@ class PairDataset(Dataset):
 
 
 def check_pairs(data_dir, splits_dir, n=10000, seed=0):
-    """Count pair types over many samples to confirm the 50/50 coin flips work."""
+    """
+    Count pair types over many samples to confirm the 50/50 coin flips work.
+
+    Prints the share of each of the four pair types (each should be about 25%)
+    and the share of images in pairs that are melanoma (about 50%).
+
+    Args:
+        data_dir: Dataset folder containing combined_images/.
+        splits_dir: Folder with the split CSVs.
+        n: Number of pairs to sample.
+        seed: Random seed for sampling.
+    """
     random.seed(seed)
     pairs = PairDataset(Path(splits_dir) / "train.csv", Path(data_dir) / IMAGE_FOLDER,
                         transform=None)

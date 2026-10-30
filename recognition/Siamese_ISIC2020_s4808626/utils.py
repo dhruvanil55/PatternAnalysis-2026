@@ -17,7 +17,13 @@ INK, MUTED, GRID = "#2b2b2b", "#6b6b6b", "#e4e4e4"
 
 
 def get_device():
-    """Use the Mac's Apple GPU (MPS) if available, otherwise the CPU."""
+    """
+    Choose where to run the models.
+
+    Returns:
+        torch.device("mps") for the Mac's Apple GPU if it is available,
+        otherwise torch.device("cpu").
+    """
     if torch.backends.mps.is_available():
         return torch.device("mps")
     return torch.device("cpu")
@@ -25,7 +31,10 @@ def get_device():
 
 def set_seed(seed):
     """
-    Fix the random number generators so runs can be repeated.
+    Fix the Python and PyTorch random number generators so runs can be repeated.
+
+    Args:
+        seed: The seed value, 42 by default in the scripts.
     """
     random.seed(seed)
     torch.manual_seed(seed)
@@ -33,8 +42,16 @@ def set_seed(seed):
 
 def loader_settings(num_workers=4):
     """
-    DataLoader options. num_workers loads images in parallel on the CPU
-    so the GPU is not left waiting for the next batch.
+    DataLoader options shared by all scripts.
+
+    Several worker processes load images in parallel on the CPU, so the GPU is
+    not left waiting for the next batch. Workers are kept alive between epochs.
+
+    Args:
+        num_workers: Number of loading processes. 0 loads images in the main process.
+
+    Returns:
+        A dict of keyword arguments for torch.utils.data.DataLoader.
     """
     return {"num_workers": num_workers, "persistent_workers": num_workers > 0}
 
@@ -43,9 +60,15 @@ def plot_history(history_csv, out_path, title, loss_label="Loss"):
     """
     Plot training curves from a history CSV written by train.py.
 
-    Left panel: training and validation loss. Right panel: validation
-    metrics with the 0.80 balanced accuracy target (AC1). A dotted line
-    marks the epoch with the best validation AUROC, which is the saved model.
+    Left panel: training and validation loss. Right panel: validation metrics
+    with the 0.80 balanced accuracy target (AC1). A dotted line marks the epoch
+    with the best validation AUROC, which is the saved model.
+
+    Args:
+        history_csv: Path to the per-epoch history CSV.
+        out_path: Where to save the PNG figure.
+        title: Figure title, for example "Baseline CNN".
+        loss_label: Y-axis label for the loss panel.
     """
     history = pd.read_csv(history_csv)
     epochs = history["epoch"]

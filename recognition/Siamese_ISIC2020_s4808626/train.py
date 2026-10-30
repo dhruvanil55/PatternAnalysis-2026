@@ -36,6 +36,14 @@ from utils import get_device, loader_settings, plot_history, set_seed
 
 
 def parse_args():
+    """
+    Read the command-line options for training and testing.
+
+    Returns:
+        An argparse Namespace with the data folder, model choice, training
+        settings (epochs, batch size, learning rate, margin, k), --limit for
+        quick tests and --test.
+    """
     parser = argparse.ArgumentParser(description="Train the ISIC 2020 melanoma models")
     parser.add_argument("--data-dir", required=True, help="Dataset folder containing combined_images/")
     parser.add_argument("--model", choices=["baseline", "siamese"], default=None,
@@ -60,7 +68,20 @@ def parse_args():
 
 
 def make_loader(split_csv, image_dir, train, batch_size, workers, limit=None):
-    """Build a DataLoader for one split, optionally on a small random subset."""
+    """
+    Build a DataLoader for one split, optionally on a small random subset.
+
+    Args:
+        split_csv: Path to the split CSV.
+        image_dir: Folder containing the images.
+        train: If True, use training augmentations and shuffle the images.
+        batch_size: Images per batch.
+        workers: Number of image loading processes.
+        limit: If set, use only this many randomly chosen images (for quick tests).
+
+    Returns:
+        A torch DataLoader that yields (images, labels, names) batches.
+    """
     dataset = LesionDataset(split_csv, image_dir, get_transforms(train))
     if limit is not None and limit < len(dataset):
         # Random subset, so it still contains a few melanoma images.
@@ -70,7 +91,18 @@ def make_loader(split_csv, image_dir, train, batch_size, workers, limit=None):
 
 
 def melanoma_weight(split_csv):
-    """How many times more each melanoma image counts in the loss (benign / melanoma)."""
+    """
+    Work out how much more each melanoma image counts in the baseline's loss.
+
+    The weight is the number of benign images divided by the number of
+    melanoma images, so both classes carry the same total weight in the loss.
+
+    Args:
+        split_csv: Path to the training split CSV.
+
+    Returns:
+        The weight as a float (3.66 for the training split used here).
+    """
     labels = pd.read_csv(split_csv)["target"]
     n_melanoma = int(labels.sum())
     return (len(labels) - n_melanoma) / n_melanoma
@@ -78,10 +110,20 @@ def melanoma_weight(split_csv):
 
 def classification_metrics(probs, labels, loss):
     """
-    Validation metrics shared by both models.
+    Validation metrics shared by both models during training.
 
-    probs are melanoma probabilities and labels are 0 or 1. The 0.5 threshold
-    is provisional and is tuned on the validation split later.
+    Uses a fixed 0.5 cut-off for balanced accuracy and melanoma recall. The
+    final thresholds are chosen on the validation split later, in evaluate.py.
+    AUROC and PR-AUC are set to NaN if the split has only one class, which can
+    happen in tiny quick-test subsets.
+
+    Args:
+        probs: Melanoma probabilities, one per image.
+        labels: True labels, 0 or 1.
+        loss: The validation loss to store with the metrics.
+
+    Returns:
+        A dict with loss, balanced_acc, melanoma_recall, auroc and pr_auc.
     """
     preds = (probs >= 0.5).astype(int)
     metrics = {
@@ -102,7 +144,19 @@ def classification_metrics(probs, labels, loss):
 # ---------------------------------------------------------------------------
 
 def train_one_epoch(model, loader, loss_fn, optimizer, device):
-    """Run one pass over the training data and return the average loss."""
+    """
+    Train the baseline for one pass over the training data.
+
+    Args:
+        model: The BaselineClassifier.
+        loader: Training DataLoader yielding (images, labels, names).
+        loss_fn: Weighted binary cross-entropy loss.
+        optimizer: The AdamW optimiser.
+        device: Device to train on.
+
+    Returns:
+        The average training loss per image.
+    """
     model.train()  # turns on training behaviour such as batch norm updates
     total_loss, total_images = 0.0, 0
 
@@ -124,7 +178,18 @@ def train_one_epoch(model, loader, loss_fn, optimizer, device):
 
 @torch.no_grad()
 def evaluate(model, loader, loss_fn, device):
-    """Score every image in a split and return the loss and key metrics."""
+    """
+    Score every image in a split with the baseline and compute the validation metrics.
+
+    Args:
+        model: The BaselineClassifier.
+        loader: DataLoader for the split, without augmentation.
+        loss_fn: The same loss used for training.
+        device: Device to run on.
+
+    Returns:
+        The metrics dict from classification_metrics.
+    """
     model.eval()  # turns off training behaviour such as batch norm updates
     total_loss, all_probs, all_labels = 0.0, [], []
 
@@ -146,7 +211,20 @@ def evaluate(model, loader, loss_fn, device):
 # ---------------------------------------------------------------------------
 
 def train_siamese_epoch(model, loader, loss_fn, optimizer, device):
-    """Run one pass over freshly sampled training pairs and return the average contrastive loss [8]."""
+    """
+    Train the Siamese network for one pass over freshly sampled pairs.
+
+    Args:
+        model: The SiameseNetwork.
+        loader: DataLoader over a PairDataset, yielding
+            (images_a, images_b, same_class, label_a, label_b).
+        loss_fn: The contrastive loss [8].
+        optimizer: The AdamW optimiser.
+        device: Device to train on.
+
+    Returns:
+        The average contrastive loss per pair.
+    """
     model.train()
     total_loss, total_pairs = 0.0, 0
 
@@ -170,7 +248,18 @@ def train_siamese_epoch(model, loader, loss_fn, optimizer, device):
 
 @torch.no_grad()
 def embed_split(model, loader, device):
-    """Embed every image in a split. Returns (embeddings, labels)."""
+    """
+    Embed every image in a split with the Siamese encoder.
+
+    Args:
+        model: The SiameseNetwork.
+        loader: DataLoader for the split, without augmentation.
+        device: Device to run on.
+
+    Returns:
+        A tuple (embeddings, labels). Embeddings stay on the device and labels
+        are on the CPU.
+    """
     model.eval()
     embeddings, labels = [], []
     for images, batch_labels, _ in loader:
@@ -185,7 +274,18 @@ def validation_pair_loss(embeddings, labels, loss_fn, n_pairs=2000, seed=0):
     Contrastive loss on a fixed set of validation pairs.
 
     Pairs follow the same two 50/50 coin flips as training, and the fixed seed
-    means every epoch is scored on the same pairs, so the values are comparable.
+    means every epoch is scored on the same pairs, so the values can be
+    compared across epochs.
+
+    Args:
+        embeddings: Embeddings of the validation images.
+        labels: Their labels, 0 or 1.
+        loss_fn: The contrastive loss.
+        n_pairs: Number of pairs to score.
+        seed: Seed for choosing the pairs.
+
+    Returns:
+        The average loss as a float, or NaN if the split has no melanoma.
     """
     generator = torch.Generator().manual_seed(seed)
     labels = labels.cpu()
@@ -198,6 +298,15 @@ def validation_pair_loss(embeddings, labels, loss_fn, n_pairs=2000, seed=0):
     class_b = torch.where(same, class_a, 1 - class_a)
 
     def pick(classes):
+        """
+        Pick one random image of the requested class for each pair.
+
+        Args:
+            classes: Tensor of the class (0 or 1) wanted for each pair.
+
+        Returns:
+            Tensor of image indices, on the same device as the embeddings.
+        """
         chosen = torch.empty(n_pairs, dtype=torch.long)
         for c in (0, 1):
             mask = classes == c
@@ -213,10 +322,23 @@ def validation_pair_loss(embeddings, labels, loss_fn, n_pairs=2000, seed=0):
 @torch.no_grad()
 def evaluate_siamese(model, ref_loader, val_loader, loss_fn, device, k):
     """
-    Predict each validation image from its k nearest melanoma and benign
-    training images, then return the loss and key metrics.
+    Score the validation split with the Siamese network and compute its metrics.
 
-    The training images are re-embedded every epoch because the encoder changes.
+    Each validation image is compared with its k nearest melanoma and k nearest
+    benign training images. The training images are re-embedded every epoch
+    because the encoder changes during training.
+
+    Args:
+        model: The SiameseNetwork.
+        ref_loader: DataLoader over the training images, without augmentation.
+        val_loader: DataLoader over the validation images.
+        loss_fn: The contrastive loss, used for the validation pair loss.
+        device: Device to run on.
+        k: Number of nearest references used per class.
+
+    Returns:
+        The metrics dict from classification_metrics, with the validation pair
+        loss as the loss.
     """
     ref_emb, ref_labels = embed_split(model, ref_loader, device)
     val_emb, val_labels = embed_split(model, val_loader, device)
@@ -228,7 +350,17 @@ def evaluate_siamese(model, ref_loader, val_loader, loss_fn, device, k):
 
 
 def train_model(args):
-    """Train one model and save the epoch with the best validation AUROC."""
+    """
+    Train one model and save the epoch with the best validation AUROC.
+
+    After every epoch the model is scored on the validation split, the history
+    CSV and training curves are updated, and the weights are saved if the
+    validation AUROC is the best so far. Quick tests (--limit) save under a
+    separate name so they never overwrite a full run.
+
+    Args:
+        args: Options from parse_args. args.model chooses "baseline" or "siamese".
+    """
     set_seed(args.seed)
     device = get_device()
     print(f"Using device: {device}  Model: {args.model}")
@@ -315,7 +447,14 @@ def test_models(args):
 
     The testing code is in evaluate.py, because it needs both trained models:
     it fits calibration and thresholds on the validation split, then scores the
-    test split once and saves the results and figures.
+    test split once and saves the results and figures. This function passes the
+    relevant options from train.py to evaluate.py.
+
+    Args:
+        args: Options from parse_args.
+
+    Raises:
+        SystemExit: If either model has not been trained yet.
     """
     missing = [m for m in ("baseline", "siamese")
                if not (Path(args.out_dir) / f"{m}_best.pt").exists()]
@@ -331,6 +470,12 @@ def test_models(args):
 
 
 def main():
+    """
+    Train a model, test both models, or both, depending on the options.
+
+    --model trains one model, --test tests both saved models, and using both
+    trains first and then tests. Running with neither stops with a message.
+    """
     args = parse_args()
     if args.model is None and not args.test:
         raise SystemExit("Choose a model to train with --model, or use --test to test the saved models")
